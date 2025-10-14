@@ -1,0 +1,8 @@
+{
+  "name": "AI Presentation Judge",
+  "description": "An AI-powered tool that acts as a judge during a presentation, providing real-time transcription and comprehensive feedback on performance, content, and delivery.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}

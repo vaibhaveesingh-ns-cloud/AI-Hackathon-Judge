@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 @asynccontextmanager
-def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Initialize shared resources here (database connections, queues, etc.)
     # Example: await some_async_init()
     yield

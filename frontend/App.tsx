@@ -99,19 +99,6 @@ const App: React.FC = () => {
   const videoFramesRef = useRef<string[]>([]);
   const frameIntervalRef = useRef<number | null>(null);
 
-  const speak = useCallback((text: string) => {
-    speechSynthesis.cancel(); // Ensure no previous utterances are queued
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    speechSynthesis.speak(utterance);
-  }, []);
-
-  useEffect(() => {
-    if (status === SessionStatus.Q_AND_A && questions.length > 0) {
-      speak(questions[currentQuestionIndex]);
-    }
-  }, [status, questions, currentQuestionIndex, speak]);
-
   useEffect(() => {
     if (status === SessionStatus.LISTENING && videoRef.current && mediaStreamRef.current) {
         if (videoRef.current.srcObject !== mediaStreamRef.current) {
@@ -343,8 +330,6 @@ const App: React.FC = () => {
   
   const handleFinishQAndA = useCallback(async () => {
     setStatus(SessionStatus.PROCESSING);
-    speechSynthesis.cancel();
-    
     if (sessionRef.current) {
         sessionRef.current.close();
         sessionRef.current = null;

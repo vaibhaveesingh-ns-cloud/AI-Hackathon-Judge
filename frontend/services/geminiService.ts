@@ -17,9 +17,8 @@ const feedbackSchema = {
             Structure: { type: Type.NUMBER, description: 'Score (0-10) for logical flow and organization.' },
             Delivery: { type: Type.NUMBER, description: 'Score (0-10) for visual delivery (body language, gestures, eye contact) based on images.' },
             'Slide Usage': { type: Type.NUMBER, description: 'Score (0-10) for how well slides were integrated as a visual aid.' },
-            'Q&A': { type: Type.NUMBER, description: 'Score (0-10) for quality and clarity of answers in the Q&A session.' },
         },
-        required: ['Clarity', 'Engagement', 'Structure', 'Delivery', 'Slide Usage', 'Q&A']
+        required: ['Clarity', 'Engagement', 'Structure', 'Delivery', 'Slide Usage']
     },
     strengths: {
       type: Type.ARRAY,
@@ -98,14 +97,13 @@ export const getFinalPresentationFeedback = async (
   videoFrames: string[],
   slideTexts: string[]
 ): Promise<PresentationFeedback | null> => {
-  const presentationTranscript = transcriptionHistory
     .filter(entry => entry.context === 'presentation')
     .map(entry => entry.text)
     .join(' ');
 
   const qAndATranscript = transcriptionHistory
-    .filter(entry => entry.context === 'q&a')
-    .map(entry => `Question was: "${entry.speaker === 'judge' ? entry.text : ''}"\nAnswer was: "${entry.speaker === 'user' ? entry.text : ''}"`)
+    .filter(entry => entry.context === 'q&a' && entry.speaker === 'judge')
+    .map(entry => entry.text)
     .join('\n\n');
 
   if (!presentationTranscript.trim()) {
@@ -117,17 +115,16 @@ export const getFinalPresentationFeedback = async (
     : 'No slides were provided.';
 
   const prompt = `
-    As an expert presentation coach, analyze the following materials: the main presentation transcript, a transcript of the follow-up Q&A session, periodic video frames, and the text content from the presentation slides.
-    
+    As an expert presentation coach, analyze the following materials: the main presentation transcript, the list of questions raised during Q&A, periodic video frames, and the text content from the presentation slides.
+
     Provide a detailed, constructive, and encouraging critique. Your analysis must be in the specified JSON format.
-    
-    CRITERIA:
+
+    CRITERIA (scores must be based only on the main presentation delivery and slide content; Q&A responses should not affect scoring):
     1.  Clarity: Was the message clear and easy to understand?
     2.  Engagement: Was the speaker energetic and engaging?
     3.  Structure: Was the presentation well-organized with a logical flow?
     4.  Delivery: Assess body language, eye contact, and gestures from the video frames.
     5.  Slide Usage: How effectively were the slides used as a visual aid vs. a script?
-    6.  Q&A Performance: How clear, confident, and accurate were the answers?
 
     Based on these criteria, provide scores from 0-10 for each category in the 'scoreBreakdown'. Also, calculate a weighted 'overallScore'. Write a concise 'overallSummary', and list the top 3-4 'strengths' and 'areasForImprovement'.
 
@@ -140,7 +137,7 @@ export const getFinalPresentationFeedback = async (
     ${slideContent}
     ---
 
-    Q&A SESSION TRANSCRIPT:
+    QUESTIONS ASKED DURING Q&A (for context only; do not score answers):
     ${qAndATranscript.length > 0 ? qAndATranscript : "No Q&A session was held."}
     ---
   `;

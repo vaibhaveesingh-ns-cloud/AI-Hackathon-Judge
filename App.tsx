@@ -1,22 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types';
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
 import { getFinalPresentationFeedback, generateQuestions } from './services/geminiService';
-import { getGeminiApiKey } from './utils/getGeminiApiKey';
 import { parsePptx } from './utils/pptxParser';
-
-// Base64 encoding/decoding functions
-function encode(bytes: Uint8Array): string {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return window.btoa(binary);
-}
+import { getGeminiApiKey } from './utils/getGeminiApiKey';
 
 const getFrameAsBase64 = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement): string | null => {
     if (videoEl.readyState >= 2) {
@@ -45,6 +35,23 @@ const getMediaErrorMessage = (err: unknown): string => {
         }
     }
     return msg;
+};
+
+const bufferToBase64 = (buffer: ArrayBuffer): string => {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    if (typeof window === 'undefined' || typeof window.btoa !== 'function') {
+        throw new Error('Base64 encoding is not available in this environment.');
+    }
+    return window.btoa(binary);
+};
+
+const getSpeechRecognitionConstructor = (): (new () => any) | null => {
+    if (typeof window === 'undefined') return null;
+    return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null;
 };
 
 const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
@@ -237,12 +244,14 @@ const App: React.FC = () => {
                     scriptProcessorRef.current.onaudioprocess = (audioProcessingEvent) => {
                         const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
                         const int16 = new Int16Array(inputData.length);
-                        for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
-                        const pcmBlob: Blob = {
-                            data: encode(new Uint8Array(int16.buffer)),
-                            mimeType: 'audio/pcm;rate=16000',
-                        };
-                        sessionPromise.then((session) => session.sendRealtimeInput({ media: pcmBlob }));
+                        for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32767;
+                        const audioData = bufferToBase64(int16.buffer);
+                        sessionPromise.then((session) => session.sendRealtimeInput({
+                            media: {
+                                mimeType: 'audio/pcm;rate=16000',
+                                data: audioData,
+                            }
+                        }));
                     };
 
                     mediaStreamSourceRef.current.connect(scriptProcessorRef.current);
@@ -253,7 +262,7 @@ const App: React.FC = () => {
                         const transcription = message.serverContent.inputTranscription;
                         currentTranscriptionRef.current += transcription.text;
                         setLiveTranscript(currentTranscriptionRef.current);
-                        if(transcription.isFinal) {
+                        if((transcription as any).isFinal) {
                             const context = statusRef.current === SessionStatus.Q_AND_A ? 'q&a' : 'presentation';
                             const text = currentTranscriptionRef.current.trim();
                             if (text) {

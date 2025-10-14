@@ -21,7 +21,6 @@ export interface ScoreBreakdown {
   Structure: number;
   Delivery: number;
   'Slide Usage': number;
-  'Q&A': number;
 }
 
 export interface DetailedFeedback {
@@ -35,4 +34,5 @@ export interface PresentationFeedback {
   scoreBreakdown: ScoreBreakdown;
   strengths: string[];
   areasForImprovement: string[];
+  questionsAsked: string[];
 }

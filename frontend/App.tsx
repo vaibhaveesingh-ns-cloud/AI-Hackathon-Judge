@@ -4,7 +4,7 @@ import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
-import { getFinalPresentationFeedback, generateQuestions } from './services/geminiService';
+import { getFinalPresentationFeedback, generateQuestions } from './services/openaiService';
 import { parsePptx } from './utils/pptxParser';
 import { getGeminiApiKey } from './utils/getGeminiApiKey';
 

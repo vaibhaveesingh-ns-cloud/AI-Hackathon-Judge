@@ -1,4 +1,11 @@
 import OpenAI from 'openai';
+import type {
+  Response as OpenAIResponse,
+  ResponseInput,
+  ResponseInputItem,
+  ResponseOutputItem,
+  ResponseOutputMessage,
+} from 'openai/resources/responses/responses';
 import { PresentationFeedback, TranscriptionEntry } from '../types';
 import { getOpenAIApiKey } from '../utils/getOpenAIApiKey';
 
@@ -23,9 +30,8 @@ const feedbackSchema = {
         Structure: { type: 'number' },
         Delivery: { type: 'number' },
         'Slide Usage': { type: 'number' },
-        'Q&A': { type: 'number' },
       },
-      required: ['Clarity', 'Engagement', 'Structure', 'Delivery', 'Slide Usage', 'Q&A'],
+      required: ['Clarity', 'Engagement', 'Structure', 'Delivery', 'Slide Usage'],
     },
     strengths: {
       type: 'array',
@@ -51,18 +57,22 @@ const questionsSchema = {
   required: ['questions'],
 } as const;
 
-const extractOutputText = (response: OpenAI.Beta.Responses.Response): string => {
+const isOutputMessage = (item: ResponseOutputItem): item is ResponseOutputMessage =>
+  item.type === 'message';
+
+const extractOutputText = (response: OpenAIResponse): string => {
   const text = response.output_text;
   if (text) return text;
 
   const parts = response.output
-    ?.map((item) =>
-      item.content
-        .map((content) => ('text' in content ? content.text : ''))
+    ?.map((item) => {
+      if (!isOutputMessage(item)) return '';
+      return item.content
+        .map((content) => (content.type === 'output_text' ? content.text : ''))
         .join(' ')
-        .trim()
-    )
-    .filter(Boolean);
+        .trim();
+    })
+    .filter((part) => Boolean(part));
   return parts?.join('\n') ?? '';
 };
 
@@ -85,9 +95,9 @@ export const generateQuestions = async (
     const response = await openai.responses.create({
       model: 'gpt-4o-mini',
       input: prompt,
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
+      text: {
+        format: {
+          type: 'json_schema',
           name: 'questions_schema',
           schema: questionsSchema,
         },
@@ -119,37 +129,61 @@ export const getFinalPresentationFeedback = async (
     return null;
   }
 
-  const qAndATranscript = transcriptionHistory
-    .filter((entry) => entry.context === 'q&a')
-    .map((entry) =>
-      entry.speaker === 'judge'
-        ? `Question was: "${entry.text}"`
-        : `Answer was: "${entry.text}"`
-    )
-    .join('\n\n');
+  const derivedQuestions = transcriptionHistory
+    .filter((entry) => entry.context === 'q&a' && entry.speaker === 'judge')
+    .map((entry) => entry.text);
 
   const slideContent = slideTexts.length
     ? slideTexts.map((text, i) => `Slide ${i + 1}:\n${text}`).join('\n\n')
     : 'No slides were provided.';
 
-  const prompt = `As an expert presentation coach, analyze the following materials: the main presentation transcript, a transcript of the follow-up Q&A session, periodic video frames, and the text content from the presentation slides.\n\nProvide a detailed, constructive, and encouraging critique. Your analysis must be in the specified JSON format.\n\nCRITERIA:\n1. Clarity: Was the message clear and easy to understand?\n2. Engagement: Was the speaker energetic and engaging?\n3. Structure: Was the presentation well-organized with a logical flow?\n4. Delivery: Assess body language, eye contact, and gestures from the video frames.\n5. Slide Usage: How effectively were the slides used as a visual aid vs. a script?\n6. Q&A Performance: How clear, confident, and accurate were the answers?\n\nBased on these criteria, provide scores from 0-10 for each category in the 'scoreBreakdown'. Also, calculate a weighted 'overallScore'. Write a concise 'overallSummary', and list the top 3-4 'strengths' and 'areasForImprovement'.\n---\nMAIN PRESENTATION TRANSCRIPT:\n${presentationTranscript}\n---\n\nSLIDE CONTENT:\n${slideContent}\n---\n\nQ&A SESSION TRANSCRIPT:\n${qAndATranscript.length > 0 ? qAndATranscript : 'No Q&A session was held.'}\n---`;
+  const prompt = `As an expert presentation coach, analyze the following materials: the main presentation transcript, the list of questions raised during Q&A, periodic video frames, and the text content from the presentation slides.
 
-  const inputs: OpenAI.Input[] = [{ role: 'user', content: [{ type: 'text', text: prompt }] }];
+Ignore any Q&A answers when evaluating performance; only the presentation delivery and slides should influence scores. Still, echo the provided questions in a "questionsAsked" field of your JSON so they can be displayed on the evaluation scorecard.
+
+CRITERIA (scores must be based only on the main presentation delivery and slide content; Q&A responses should not affect scoring):
+1. Clarity: Was the message clear and easy to understand?
+2. Engagement: Was the speaker energetic and engaging?
+3. Structure: Was the presentation well-organized with a logical flow?
+4. Delivery: Assess body language, eye contact, and gestures from the video frames.
+5. Slide Usage: How effectively were the slides used as a visual aid vs. a script?
+
+Based on these criteria, provide scores from 0-10 for each category in the "scoreBreakdown". Also, calculate a weighted "overallScore". Write a concise "overallSummary", and list the top 3-4 "strengths" and "areasForImprovement".
+---
+MAIN PRESENTATION TRANSCRIPT:
+${presentationTranscript}
+---
+
+SLIDE CONTENT:
+${slideContent}
+
+QUESTIONS ASKED DURING Q&A (for context only; do not score answers):
+${derivedQuestions.length > 0 ? derivedQuestions.join('\n\n') : 'No Q&A session was held.'}
+---`;
+
+  const userMessage: ResponseInputItem.Message = {
+    role: 'user',
+    content: [{ type: 'input_text', text: prompt }],
+    type: 'message',
+  };
 
   videoFrames.slice(0, 6).forEach((frame) => {
-    inputs[0].content.push({
+    userMessage.content.push({
       type: 'input_image',
-      image_base64: frame,
+      image_url: frame.startsWith('data:') ? frame : `data:image/jpeg;base64,${frame}`,
+      detail: 'auto',
     });
   });
+
+  const inputs: ResponseInput = [userMessage];
 
   try {
     const response = await openai.responses.create({
       model: 'gpt-4o-mini',
       input: inputs,
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
+      text: {
+        format: {
+          type: 'json_schema',
           name: 'feedback_schema',
           schema: feedbackSchema,
         },
@@ -157,8 +191,11 @@ export const getFinalPresentationFeedback = async (
     });
 
     const jsonText = extractOutputText(response);
-    const feedback = JSON.parse(jsonText) as PresentationFeedback;
-    return feedback;
+    const feedback = JSON.parse(jsonText) as Omit<PresentationFeedback, 'questionsAsked'>;
+    return {
+      ...feedback,
+      questionsAsked: derivedQuestions,
+    };
   } catch (error) {
     console.error('Error getting feedback from OpenAI API:', error);
     return null;

@@ -1,7 +1,8 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { PresentationFeedback, TranscriptionEntry } from '../types';
+import { getGeminiApiKey } from '../utils/getGeminiApiKey';
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
 
 const feedbackSchema = {
   type: Type.OBJECT,

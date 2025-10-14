@@ -1,10 +1,11 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, LiveSession, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types';
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
 import { getFinalPresentationFeedback, generateQuestions } from './services/geminiService';
+import { getGeminiApiKey } from './utils/getGeminiApiKey';
 import { parsePptx } from './utils/pptxParser';
 
 // Base64 encoding/decoding functions
@@ -28,9 +29,25 @@ const getFrameAsBase64 = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement
         return dataUrl.split(',')[1];
     }
     return null;
-}
+};
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getMediaErrorMessage = (err: unknown): string => {
+    let msg = 'Could not access microphone or camera. Please ensure permissions are granted.';
+    if (err instanceof Error) {
+        const domError = err as DOMException;
+        const name = domError.name || err.name;
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+            msg = 'Permission for camera/microphone was denied. Please enable them in browser settings.';
+        } else if (name === 'NotFoundError') {
+            msg = 'No camera or microphone found. Please connect them and try again.';
+        } else if (err.message) {
+            msg = err.message;
+        }
+    }
+    return msg;
+};
+
+const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
 
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
 
@@ -40,17 +57,19 @@ const App: React.FC = () => {
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
-  
+
   const [transcriptionHistory, setTranscriptionHistory] = useState<TranscriptionEntry[]>([]);
   const [liveTranscript, setLiveTranscript] = useState<string>("");
   const [feedback, setFeedback] = useState<PresentationFeedback | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
+  const [hasMediaPermissions, setHasMediaPermissions] = useState(false);
+  const [permissionInfo, setPermissionInfo] = useState<string | null>(null);
+
   const [slides, setSlides] = useState<string[]>([]);
-  const [currentSlide, setCurrentSlide] = useState(0);
+  const [currentSlide, setCurrentSlide] = useState<number>(0);
   const [pptxFile, setPptxFile] = useState<File | null>(null);
-  const [isParsing, setIsParsing] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
+  const [isParsing, setIsParsing] = useState<boolean>(false);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
 
   const [questions, setQuestions] = useState<string[]>([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -60,7 +79,7 @@ const App: React.FC = () => {
   }, [currentQuestionIndex]);
 
 
-  const sessionRef = useRef<LiveSession | null>(null);
+  const sessionRef = useRef<Awaited<ReturnType<typeof ai.live.connect>> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -94,6 +113,37 @@ const App: React.FC = () => {
     }
   }, [status]);
 
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.permissions?.query) return;
+
+    const handlePermissionState = (state: PermissionState) => {
+      if (state === 'granted') {
+        setHasMediaPermissions(true);
+        setPermissionInfo((prev) => prev ?? 'Camera and microphone access granted. You can start the evaluation anytime.');
+      } else if (state === 'denied') {
+        setHasMediaPermissions(false);
+      }
+    };
+
+    const permissionNames = ['microphone', 'camera'] as const;
+
+    permissionNames.forEach(async (permissionName) => {
+      try {
+        const statusResult = await navigator.permissions!.query({ name: permissionName as PermissionName });
+        handlePermissionState(statusResult.state);
+        statusResult.onchange = () => handlePermissionState(statusResult.state);
+      } catch (err) {
+        // Some browsers (e.g., Safari) do not support querying these permissions; ignore.
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (status === SessionStatus.IDLE && hasMediaPermissions) {
+      setPermissionInfo('Camera and microphone access granted. You can start the evaluation anytime.');
+    }
+  }, [status, hasMediaPermissions]);
+
   const stopMediaProcessing = useCallback(() => {
     if (scriptProcessorRef.current) scriptProcessorRef.current.onaudioprocess = null;
     if (mediaStreamSourceRef.current) mediaStreamSourceRef.current.disconnect();
@@ -109,6 +159,29 @@ const App: React.FC = () => {
     mediaStreamSourceRef.current = null;
     frameIntervalRef.current = null;
   }, []);
+
+  const requestMediaStream = useCallback(async () => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Media devices API is not supported in this browser.');
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+  }, []);
+
+  const handleRequestPermissions = useCallback(async () => {
+    setPermissionInfo(null);
+    try {
+      const stream = await requestMediaStream();
+      stream.getTracks().forEach(track => track.stop());
+      setHasMediaPermissions(true);
+      setPermissionInfo('Camera and microphone access granted. You can start the evaluation anytime.');
+      setError(null);
+    } catch (err) {
+      const msg = getMediaErrorMessage(err);
+      setHasMediaPermissions(false);
+      setPermissionInfo(null);
+      setError(msg);
+    }
+  }, [requestMediaStream]);
 
   const resetState = () => {
     setStatus(SessionStatus.IDLE);
@@ -138,7 +211,9 @@ const App: React.FC = () => {
     setCurrentQuestionIndex(0);
 
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        const stream = await requestMediaStream();
+        setHasMediaPermissions(true);
+        setPermissionInfo(null);
         mediaStreamRef.current = stream;
 
         frameIntervalRef.current = window.setInterval(() => {
@@ -219,15 +294,12 @@ const App: React.FC = () => {
         });
         sessionRef.current = await sessionPromise;
     } catch (err) {
-        let msg = 'Could not access microphone or camera. Please ensure permissions are granted.';
-        if (err instanceof Error) {
-            if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') msg = 'Permission for camera/microphone was denied. Please enable them in browser settings.';
-            else if (err.name === 'NotFoundError') msg = 'No camera or microphone found. Please connect them and try again.';
-        }
+        const msg = getMediaErrorMessage(err);
+        setHasMediaPermissions(false);
         setError(msg);
         setStatus(SessionStatus.ERROR);
     }
-  }, [stopMediaProcessing, questions]);
+  }, [stopMediaProcessing, questions, requestMediaStream]);
 
   const handleStopPresentation = useCallback(async () => {
     setStatus(SessionStatus.GENERATING_QUESTIONS);
@@ -437,8 +509,19 @@ const App: React.FC = () => {
         </div>
       </header>
       
-      <main className="w-full max-w-7xl mx-auto flex-grow flex flex-col items-center justify-center">
-        {error && <p className="bg-red-900/50 text-red-300 border border-red-700 rounded-lg p-4 mb-6 max-w-2xl w-full text-center">{error}</p>}
+      <main className="w-full max-w-7xl mx-auto flex-grow flex flex-col items-center justify-center text-center space-y-4">
+        {error && <p className="bg-red-900/50 text-red-300 border border-red-700 rounded-lg p-4 mb-2 max-w-2xl w-full">{error}</p>}
+        {permissionInfo && !error && (
+          <p className="bg-emerald-900/40 text-emerald-300 border border-emerald-700 rounded-lg p-3 max-w-2xl w-full">
+            {permissionInfo}
+          </p>
+        )}
+        {!hasMediaPermissions && (
+          <ControlButton onClick={handleRequestPermissions} variant="secondary" className="self-center">
+            <i className="fas fa-video mr-2"></i>
+            Enable Camera &amp; Microphone
+          </ControlButton>
+        )}
         {renderContent()}
       </main>
 
@@ -446,7 +529,10 @@ const App: React.FC = () => {
       
       <footer className="w-full max-w-7xl mx-auto mt-8 h-16 flex items-center justify-center">
         {status === SessionStatus.IDLE || status === SessionStatus.COMPLETE || status === SessionStatus.ERROR ? (
-          <ControlButton onClick={status === SessionStatus.IDLE ? handleStart : resetState} disabled={slides.length === 0 || isParsing}>
+          <ControlButton
+            onClick={status === SessionStatus.IDLE ? handleStart : resetState}
+            disabled={slides.length === 0 || isParsing || (!hasMediaPermissions && status === SessionStatus.IDLE)}
+          >
             <i className={`fas ${status === SessionStatus.IDLE ? 'fa-play' : 'fa-redo'} mr-2`}></i>
             {status === SessionStatus.IDLE ? 'Start Judging' : 'Start New Evaluation'}
           </ControlButton>

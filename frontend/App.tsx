@@ -90,6 +90,7 @@ const App: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const recognitionRef = useRef<any>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const currentTranscriptionRef = useRef<string>("");
   
@@ -465,8 +466,8 @@ const App: React.FC = () => {
       default: // IDLE or ERROR
         return (
              <div className="w-full max-w-3xl text-center">
-                <h1 className="text-5xl font-extrabold text-slate-100">Welcome to <span className="text-indigo-400">PitchPerfect AI</span></h1>
-                <p className="mt-4 text-lg text-slate-400 max-w-2xl mx-auto">Ready to perfect your next pitch? Upload your presentation to get started.</p>
+                <h1 className="text-5xl font-extrabold text-slate-100">Welcome to <span className="text-indigo-400">AI Hackathon Judge</span></h1>
+                <p className="mt-4 text-lg text-slate-400 max-w-2xl mx-auto">Ready to ace your hackathon pitch? Upload your presentation to get started.</p>
                 <div 
                     className={`mt-10 p-8 border-2 border-dashed rounded-2xl transition-colors duration-300 ${isDragOver ? 'border-indigo-400 bg-slate-800/50' : 'border-slate-700'}`}
                     onDrop={handleDrop} onDragOver={handleDragEvents} onDragLeave={handleDragEvents} onDragEnd={handleDragEvents}
@@ -509,7 +510,7 @@ const App: React.FC = () => {
       <header className="w-full max-w-7xl mx-auto flex justify-between items-center pb-4">
         <div className="flex items-center gap-3">
           <PitchPerfectIcon className="w-8 h-8" />
-          <h1 className="text-2xl font-bold text-slate-200 tracking-tight">PitchPerfect AI</h1>
+          <h1 className="text-2xl font-bold text-slate-200 tracking-tight">AI Hackathon Judge</h1>
         </div>
         <div className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-400">
             <a href="#" className="hover:text-indigo-400 transition-colors">Dashboard</a>

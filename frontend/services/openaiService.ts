@@ -122,7 +122,8 @@ export const generateQuestions = async (
 export const getFinalPresentationFeedback = async (
   transcriptionHistory: TranscriptionEntry[],
   videoFrames: string[],
-  slideTexts: string[]
+  slideTexts: string[],
+  questions: string[] = []
 ): Promise<PresentationFeedback | null> => {
   const presentationTranscript = transcriptionHistory
     .filter((entry) => entry.context === 'presentation')
@@ -133,9 +134,11 @@ export const getFinalPresentationFeedback = async (
     return null;
   }
 
-  const derivedQuestions = transcriptionHistory
-    .filter((entry) => entry.context === 'q&a' && entry.speaker === 'judge')
-    .map((entry) => entry.text);
+  const derivedQuestions = questions.length
+    ? questions
+    : transcriptionHistory
+        .filter((entry) => entry.context === 'q&a' && entry.speaker === 'judge')
+        .map((entry) => entry.text);
 
   const slideContent = slideTexts.length
     ? slideTexts.map((text, i) => `Slide ${i + 1}:\n${text}`).join('\n\n')

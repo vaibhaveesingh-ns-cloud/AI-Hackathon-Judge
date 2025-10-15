@@ -1,111 +1,166 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { PresentationFeedback, ScoreBreakdown } from '../types';
 
-const categoryIcons: Record<keyof ScoreBreakdown, string> = {
-  Structure: 'fas fa-sitemap',
-  Clarity: 'fas fa-bullseye',
-  Engagement: 'fas fa-comments',
-  Delivery: 'fas fa-microphone-alt',
-  'Slide Usage': 'fas fa-file-powerpoint',
-  'Q&A': 'fas fa-question-circle',
+const getScoreDescriptor = (score: number) => {
+  if (score >= 9) return 'Outstanding';
+  if (score >= 7.5) return 'Strong';
+  if (score >= 6) return 'Solid';
+  if (score >= 4.5) return 'Needs refinement';
+  return 'Focus area';
 };
 
-const OverallScoreDonut: React.FC<{ score: number }> = ({ score }) => {
-  const normalizedScore = score / 10;
-  const circumference = 2 * Math.PI * 52;
-  const offset = circumference - normalizedScore * circumference;
-
-  const color = score > 7 ? 'stroke-green-400' : score > 4 ? 'stroke-yellow-400' : 'stroke-red-400';
-  const textColor = score > 7 ? 'text-green-400' : score > 4 ? 'text-yellow-400' : 'text-red-400';
-
-  return (
-    <div className="relative flex items-center justify-center w-52 h-52">
-      <svg className="absolute w-full h-full" viewBox="0 0 120 120">
-        <circle
-          className="stroke-slate-700"
-          strokeWidth="10"
-          fill="transparent"
-          r="52"
-          cx="60"
-          cy="60"
-        />
-        <circle
-          className={`${color} transition-all duration-1000 ease-out`}
-          strokeWidth="10"
-          strokeLinecap="round"
-          fill="transparent"
-          r="52"
-          cx="60"
-          cy="60"
-          style={{
-            strokeDasharray: circumference,
-            strokeDashoffset: offset,
-            transform: 'rotate(-90deg)',
-            transformOrigin: '50% 50%',
-          }}
-        />
-      </svg>
-      <div className="flex flex-col items-center">
-        <span className={`text-5xl font-bold ${textColor}`}>{score.toFixed(1)}</span>
-        <span className="text-sm font-medium text-slate-400">Overall Score</span>
-      </div>
-    </div>
-  );
-};
-
-const ScoreBar: React.FC<{ label: keyof ScoreBreakdown; score: number }> = ({ label, score }) => {
-    const color = score > 7 ? 'bg-green-500' : score > 4 ? 'bg-yellow-500' : 'bg-red-500';
-    return (
-        <div>
-            <div className="flex justify-between items-center mb-1">
-                <p className="text-sm font-medium text-slate-300">{label}</p>
-                <p className="text-sm font-bold text-slate-200">{score.toFixed(1)}</p>
-            </div>
-            <div className="w-full bg-slate-700 rounded-full h-2">
-                <div className={`${color} h-2 rounded-full transition-all duration-1000 ease-out`} style={{ width: `${score * 10}%` }}></div>
-            </div>
-        </div>
-    );
+const getScoreColor = (score: number) => {
+  if (score >= 7.5) return 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/40';
+  if (score >= 6) return 'bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/40';
+  return 'bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/30';
 };
 
 const FeedbackCard: React.FC<{ feedback: PresentationFeedback | null }> = ({ feedback }) => {
   if (!feedback) return null;
 
+  const scoreEntries = useMemo(
+    () => Object.entries(feedback.scoreBreakdown) as [keyof ScoreBreakdown, number][],
+    [feedback.scoreBreakdown]
+  );
+
+  const detailedInsights = useMemo(
+    () =>
+      scoreEntries.map(([category, score]) => {
+        const descriptor = getScoreDescriptor(score);
+        return {
+          category,
+          score,
+          descriptor,
+          message:
+            score >= 7.5
+              ? `${category} is a highlight of this presentation. Maintain the same approach to keep this strength consistent.`
+              : score >= 6
+              ? `${category} performed well overall. A few targeted refinements could elevate this area from solid to exceptional.`
+              : `${category} could use additional focus. Revisit this aspect in future rehearsals to close the performance gap.`,
+        };
+      }),
+    [scoreEntries]
+  );
+
   return (
-    <div className="bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl shadow-2xl p-8 max-w-4xl w-full animate-fade-in">
-      <h2 className="text-4xl font-extrabold text-center text-slate-100 mb-2">Evaluation Scorecard</h2>
-      <p className="text-center text-slate-400 mb-8">A dynamic breakdown of your presentation performance.</p>
+    <div className="bg-slate-950/70 backdrop-blur-md border border-slate-800/70 rounded-3xl shadow-2xl p-10 max-w-5xl w-full text-slate-200 animate-fade-in">
+      <header className="text-center mb-10">
+        <h2 className="text-4xl font-extrabold tracking-tight text-slate-50 mb-3">Presentation Feedback</h2>
+        <p className="text-slate-400 text-lg">Detailed AI insights on your recent presentation performance.</p>
+      </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
-        <div className="bg-slate-800/50 p-6 rounded-xl flex flex-col items-center justify-center border border-slate-700">
-          <OverallScoreDonut score={feedback.overallScore} />
-        </div>
-        <div className="bg-slate-800/50 p-6 rounded-xl flex flex-col justify-center space-y-4 border border-slate-700">
-            <h3 className="text-xl font-bold text-center text-slate-200 mb-2">Score Breakdown</h3>
-            {Object.entries(feedback.scoreBreakdown).map(([key, value]) => (
-                <ScoreBar key={key} label={key as keyof ScoreBreakdown} score={value} />
+      <section className="bg-slate-900/60 border border-slate-700 rounded-2xl p-6 mb-8">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+          <div>
+            <h3 className="text-sm uppercase tracking-wider text-indigo-300 mb-2">Overall Score</h3>
+            <div className="flex items-baseline gap-2">
+              <span className="text-5xl font-bold text-indigo-200">{feedback.overallScore.toFixed(1)}</span>
+              <span className="text-sm text-slate-500">/ 10</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 flex-1">
+            {scoreEntries.map(([category, score]) => (
+              <div
+                key={category}
+                className="bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3 flex flex-col gap-1"
+              >
+                <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{category}</span>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-2xl font-bold text-slate-100">{score.toFixed(1)}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${getScoreColor(score)}`}>{getScoreDescriptor(score)}</span>
+                </div>
+              </div>
             ))}
+          </div>
         </div>
-      </div>
-      
-      <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 mb-8">
-        <h3 className="text-xl font-bold text-slate-200 mb-4">Overall Assessment</h3>
-        <p className="text-slate-300 leading-relaxed">{feedback.overallSummary}</p>
-      </div>
+        <p className="mt-6 text-slate-300 leading-relaxed">{feedback.overallSummary}</p>
+      </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="bg-green-900/20 border border-green-700/50 p-6 rounded-xl">
-          <h3 className="text-xl font-semibold text-green-400 mb-3 flex items-center"><i className="fas fa-thumbs-up mr-3"></i> Strengths</h3>
-          <ul className="list-disc list-inside space-y-2 text-slate-300">
-            {feedback.strengths.map((s, i) => <li key={i}>{s}</li>)}
-          </ul>
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-6">
+          <h3 className="text-xl font-semibold text-emerald-300 mb-4 flex items-center gap-3">
+            <i className="fas fa-thumbs-up"></i>
+            Strengths
+          </h3>
+          <div className="space-y-3">
+            {feedback.strengths.map((item, index) => (
+              <div key={index} className="bg-slate-950/40 border border-emerald-500/20 rounded-xl p-4 text-sm text-slate-200">
+                {item}
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="bg-yellow-900/20 border border-yellow-700/50 p-6 rounded-xl">
-          <h3 className="text-xl font-semibold text-yellow-400 mb-3 flex items-center"><i className="fas fa-lightbulb mr-3"></i> Areas for Improvement</h3>
-          <ul className="list-disc list-inside space-y-2 text-slate-300">
-            {feedback.areasForImprovement.map((a, i) => <li key={i}>{a}</li>)}
-          </ul>
+
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-6">
+          <h3 className="text-xl font-semibold text-amber-300 mb-4 flex items-center gap-3">
+            <i className="fas fa-lightbulb"></i>
+            Areas for Improvement
+          </h3>
+          <div className="space-y-3">
+            {feedback.areasForImprovement.map((item, index) => (
+              <div key={index} className="bg-slate-950/40 border border-amber-500/20 rounded-xl p-4 text-sm text-slate-200">
+                {item}
+              </div>
+            ))}
+          </div>
         </div>
+      </section>
+
+      <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 mb-10">
+        <div className="flex items-center gap-3 mb-6">
+          <i className="fas fa-clipboard-check text-indigo-300 text-lg"></i>
+          <h3 className="text-2xl font-semibold text-slate-100">Detailed Feedback</h3>
+        </div>
+        <div className="space-y-4">
+          {detailedInsights.map(({ category, score, descriptor, message }) => (
+            <details key={category} className="group bg-slate-950/40 border border-slate-800/70 rounded-xl transition-all">
+              <summary className="cursor-pointer list-none flex items-center justify-between gap-4 px-5 py-4">
+                <div>
+                  <p className="text-lg font-semibold text-slate-100">{category}</p>
+                  <p className="text-sm text-slate-400">{descriptor}</p>
+                </div>
+                <span className="text-2xl font-bold text-indigo-200">{score.toFixed(1)}</span>
+              </summary>
+              <div className="px-5 pb-5 text-sm text-slate-300 leading-relaxed">{message}</div>
+            </details>
+          ))}
+        </div>
+      </section>
+
+      <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 mb-8">
+        <div className="flex items-center gap-3 mb-4">
+          <i className="fas fa-question-circle text-sky-300 text-lg"></i>
+          <h3 className="text-2xl font-semibold text-slate-100">Relevant Questions</h3>
+        </div>
+        <p className="text-sm text-slate-400 mb-5">Here are the top questions your audience is likely to ask.</p>
+        <div className="space-y-3">
+          {feedback.questionsAsked.length > 0 ? (
+            feedback.questionsAsked.map((question, index) => (
+              <div
+                key={index}
+                className="bg-slate-950/50 border border-sky-500/20 rounded-xl px-5 py-4 text-sm text-slate-200 flex items-start gap-3"
+              >
+                <span className="text-sky-300 mt-1">
+                  <i className="fas fa-comment-dots"></i>
+                </span>
+                <span>{question}</span>
+              </div>
+            ))
+          ) : (
+            <p className="text-slate-400">No audience questions were generated for this session.</p>
+          )}
+        </div>
+      </section>
+
+      <div className="flex justify-center">
+        <button
+          type="button"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-500 hover:bg-indigo-400 text-slate-50 font-semibold rounded-full shadow-lg shadow-indigo-500/20 transition focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500/70 focus:ring-offset-slate-950"
+          onClick={() => window.print()}
+        >
+          <i className="fas fa-download"></i>
+          Download Full Report
+        </button>
       </div>
     </div>
   );

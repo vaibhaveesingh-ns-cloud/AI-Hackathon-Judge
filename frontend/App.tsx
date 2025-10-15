@@ -256,8 +256,7 @@ const App: React.FC = () => {
                             if (text) {
                                 if (context === 'q&a') {
                                     setTranscriptionHistory(prev => [
-                                        ...prev, 
-                                        { speaker: 'judge', text: questions[currentQuestionIndexRef.current], context: 'q&a' },
+                                        ...prev,
                                         { speaker: 'user', text, context: 'q&a' }
                                     ]);
                                 } else {
@@ -339,11 +338,10 @@ const App: React.FC = () => {
     let finalHistory = [...transcriptionHistory];
     const lastAnswer = currentTranscriptionRef.current.trim();
     if (lastAnswer && questions.length > 0) {
-        finalHistory.push({ speaker: 'judge', text: questions[currentQuestionIndex], context: 'q&a' });
         finalHistory.push({ speaker: 'user', text: lastAnswer, context: 'q&a' });
     }
 
-    const finalFeedback = await getFinalPresentationFeedback(finalHistory, videoFramesRef.current, slides);
+    const finalFeedback = await getFinalPresentationFeedback(finalHistory, videoFramesRef.current, slides, questions);
     if (finalFeedback) {
       setFeedback(finalFeedback);
       setStatus(SessionStatus.COMPLETE);

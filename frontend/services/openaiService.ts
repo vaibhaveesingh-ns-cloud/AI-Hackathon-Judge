@@ -16,6 +16,7 @@ const openai = new OpenAI({
 
 const feedbackSchema = {
   type: 'object',
+  additionalProperties: false,
   properties: {
     overallScore: { type: 'number', description: 'Overall weighted score from 0 to 10.' },
     overallSummary: {
@@ -24,6 +25,7 @@ const feedbackSchema = {
     },
     scoreBreakdown: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         Clarity: { type: 'number' },
         Engagement: { type: 'number' },
@@ -101,6 +103,7 @@ export const generateQuestions = async (
           type: 'json_schema',
           name: 'questions_schema',
           schema: questionsSchema,
+          strict: true,
         },
       },
     });
@@ -187,6 +190,7 @@ ${derivedQuestions.length > 0 ? derivedQuestions.join('\n\n') : 'No Q&A session 
           type: 'json_schema',
           name: 'feedback_schema',
           schema: feedbackSchema,
+          strict: true,
         },
       },
     });

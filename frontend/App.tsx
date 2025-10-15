@@ -251,17 +251,9 @@ const App: React.FC = () => {
                         currentTranscriptionRef.current += transcription.text;
                         setLiveTranscript(currentTranscriptionRef.current);
                         if((transcription as any).isFinal) {
-                            const context = statusRef.current === SessionStatus.Q_AND_A ? 'q&a' : 'presentation';
                             const text = currentTranscriptionRef.current.trim();
                             if (text) {
-                                if (context === 'q&a') {
-                                    setTranscriptionHistory(prev => [
-                                        ...prev,
-                                        { speaker: 'user', text, context: 'q&a' }
-                                    ]);
-                                } else {
-                                    setTranscriptionHistory(prev => [...prev, { speaker: 'user', text, context }]);
-                                }
+                                setTranscriptionHistory(prev => [...prev, { speaker: 'user', text, context: 'presentation' }]);
                             }
                             currentTranscriptionRef.current = "";
                             setLiveTranscript("");
@@ -275,7 +267,7 @@ const App: React.FC = () => {
                     stopMediaProcessing();
                 },
                 onclose: (e: CloseEvent) => {
-                    if ([SessionStatus.LISTENING, SessionStatus.Q_AND_A].includes(statusRef.current)) {
+                    if ([SessionStatus.LISTENING].includes(statusRef.current)) {
                         setError('The connection to the judge was lost unexpectedly. Please try again.');
                         setStatus(SessionStatus.ERROR);
                         stopMediaProcessing();
@@ -297,6 +289,35 @@ const App: React.FC = () => {
     }
   }, [stopMediaProcessing, questions, requestMediaStream]);
 
+  const handleFinishQAndA = useCallback(async (
+    providedQuestions?: string[],
+    historyOverride?: TranscriptionEntry[]
+  ) => {
+    setStatus(SessionStatus.PROCESSING);
+    if (sessionRef.current) {
+        sessionRef.current.close();
+        sessionRef.current = null;
+    }
+    stopMediaProcessing();
+
+    const sourceHistory = historyOverride ?? transcriptionHistory;
+    let finalHistory = [...sourceHistory];
+    const lastAnswer = currentTranscriptionRef.current.trim();
+    const questionSet = providedQuestions ?? questions;
+    if (lastAnswer && questionSet.length > 0) {
+        finalHistory.push({ speaker: 'user', text: lastAnswer, context: 'q&a' });
+    }
+
+    const finalFeedback = await getFinalPresentationFeedback(finalHistory, videoFramesRef.current, slides, questionSet);
+    if (finalFeedback) {
+      setFeedback(finalFeedback);
+      setStatus(SessionStatus.COMPLETE);
+    } else {
+      setError('Could not generate feedback. The presentation may have been too short.');
+      setStatus(SessionStatus.ERROR);
+    }
+  }, [transcriptionHistory, stopMediaProcessing, slides, questions, currentQuestionIndex]);
+  
   const handleStopPresentation = useCallback(async () => {
     setStatus(SessionStatus.GENERATING_QUESTIONS);
     let currentHistory = [...transcriptionHistory];
@@ -311,45 +332,11 @@ const App: React.FC = () => {
     if (generatedQuestions.length > 0) {
         setQuestions(generatedQuestions);
         setCurrentQuestionIndex(0);
-        setStatus(SessionStatus.Q_AND_A);
+        await handleFinishQAndA(generatedQuestions, currentHistory);
     } else {
-        await handleFinishQAndA();
+        await handleFinishQAndA(undefined, currentHistory);
     }
-  }, [transcriptionHistory, slides]);
-
-  const handleNextQuestion = useCallback(() => {
-    if (currentQuestionIndex < questions.length - 1) {
-      setCurrentQuestionIndex(prev => prev + 1);
-      currentTranscriptionRef.current = "";
-      setLiveTranscript("");
-    } else {
-      handleFinishQAndA();
-    }
-  }, [currentQuestionIndex, questions]);
-  
-  const handleFinishQAndA = useCallback(async () => {
-    setStatus(SessionStatus.PROCESSING);
-    if (sessionRef.current) {
-        sessionRef.current.close();
-        sessionRef.current = null;
-    }
-    stopMediaProcessing();
-
-    let finalHistory = [...transcriptionHistory];
-    const lastAnswer = currentTranscriptionRef.current.trim();
-    if (lastAnswer && questions.length > 0) {
-        finalHistory.push({ speaker: 'user', text: lastAnswer, context: 'q&a' });
-    }
-
-    const finalFeedback = await getFinalPresentationFeedback(finalHistory, videoFramesRef.current, slides, questions);
-    if (finalFeedback) {
-      setFeedback(finalFeedback);
-      setStatus(SessionStatus.COMPLETE);
-    } else {
-      setError('Could not generate feedback. The presentation may have been too short.');
-      setStatus(SessionStatus.ERROR);
-    }
-  }, [transcriptionHistory, stopMediaProcessing, slides, questions, currentQuestionIndex]);
+  }, [transcriptionHistory, slides, handleFinishQAndA]);
   
   const processFile = async (file: File) => {
     if (file && file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation") {
@@ -420,20 +407,17 @@ const App: React.FC = () => {
             </div>
           </div>
         );
-      case SessionStatus.Q_AND_A:
-        return (
-            <div className="w-full max-w-4xl flex flex-col items-center animate-fade-in">
-                <div className="w-full bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl p-8 mb-6 text-center">
-                    <p className="text-lg font-semibold text-indigo-400 mb-2">Question {currentQuestionIndex + 1} / {questions.length}</p>
-                    <p className="text-3xl font-bold text-slate-100">{questions[currentQuestionIndex]}</p>
-                </div>
-                <div className="w-full bg-slate-900/50 rounded-2xl p-4 border border-slate-800 min-h-[8rem]">
-                    <h3 className="text-lg font-semibold text-indigo-400 mb-2">Your Answer</h3>
-                    <p className="text-left text-slate-300">{liveTranscript}</p>
-                </div>
-            </div>
-        );
       case SessionStatus.PROCESSING:
+        return (
+          <div className="flex flex-col items-center gap-6">
+            <i className="fas fa-spinner fa-spin fa-3x text-indigo-400"></i>
+            <p className="mt-4 text-xl font-medium text-slate-300">
+              {status === SessionStatus.CONNECTING ? "Connecting to Judge..." :
+               status === SessionStatus.GENERATING_QUESTIONS ? "Preparing Questions..." :
+               "Analyzing Your Performance..."}
+            </p>
+          </div>
+        );
       case SessionStatus.GENERATING_QUESTIONS:
       case SessionStatus.CONNECTING:
         return (
@@ -532,11 +516,6 @@ const App: React.FC = () => {
         ) : status === SessionStatus.LISTENING ? (
           <ControlButton onClick={handleStopPresentation} variant="danger">
             <i className="fas fa-stop mr-2"></i> Finish Presentation & Start Q&A
-          </ControlButton>
-        ) : status === SessionStatus.Q_AND_A ? (
-           <ControlButton onClick={handleNextQuestion} variant="primary">
-            <i className={`fas ${currentQuestionIndex < questions.length - 1 ? 'fa-arrow-right' : 'fa-check'} mr-2`}></i>
-            {currentQuestionIndex < questions.length - 1 ? 'Next Question' : 'Finish Q&A'}
           </ControlButton>
         ) : null}
       </footer>

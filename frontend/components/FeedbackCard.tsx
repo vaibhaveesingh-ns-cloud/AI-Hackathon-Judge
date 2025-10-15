@@ -58,11 +58,11 @@ const FeedbackCard: React.FC<{ feedback: PresentationFeedback | null }> = ({ fee
               <span className="text-sm text-slate-500">/ 10</span>
             </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 flex-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 flex-1 w-full">
             {scoreEntries.map(([category, score]) => (
               <div
                 key={category}
-                className="bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3 flex flex-col gap-1"
+                className="bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3 flex flex-col gap-1 min-w-0"
               >
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{category}</span>
                 <div className="flex items-baseline gap-2">

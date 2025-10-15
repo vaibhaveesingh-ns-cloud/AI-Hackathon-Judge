@@ -47,6 +47,7 @@ const feedbackSchema = {
 
 const questionsSchema = {
   type: 'object',
+  additionalProperties: false,
   properties: {
     questions: {
       type: 'array',

@@ -35,6 +35,13 @@ const getMediaErrorMessage = (err: unknown): string => {
     return msg;
 };
 
+type SpeechRecognitionConstructor = new () => any;
+
+const getSpeechRecognitionConstructor = (): SpeechRecognitionConstructor | null => {
+    if (typeof window === 'undefined') return null;
+    return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null;
+};
+
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
 
 const App: React.FC = () => {
@@ -66,6 +73,8 @@ const App: React.FC = () => {
   const frameIntervalRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedAudioChunksRef = useRef<Blob[]>([]);
+  const speechRecognitionRef = useRef<any>(null);
+  const shouldRestartRecognitionRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (status === SessionStatus.LISTENING && videoRef.current && mediaStreamRef.current) {
@@ -107,6 +116,23 @@ const App: React.FC = () => {
     }
   }, [status, hasMediaPermissions]);
 
+  const stopSpeechRecognition = useCallback(() => {
+    shouldRestartRecognitionRef.current = false;
+    const recognition = speechRecognitionRef.current;
+    if (recognition) {
+      try {
+        recognition.onresult = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+        recognition.stop();
+      } catch (stopError) {
+        console.debug('Speech recognition stop error:', stopError);
+      }
+    }
+    speechRecognitionRef.current = null;
+    setLiveTranscript('');
+  }, []);
+
   const stopMediaProcessing = useCallback(() => {
     if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(track => track.stop());
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
@@ -120,6 +146,7 @@ const App: React.FC = () => {
       recorder.stop();
     }
     mediaRecorderRef.current = null;
+    stopSpeechRecognition();
   }, []);
 
   const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
@@ -191,7 +218,70 @@ const App: React.FC = () => {
     setSlides([]);
     recordedAudioChunksRef.current = [];
     mediaRecorderRef.current = null;
+    stopSpeechRecognition();
   }
+
+  const startSpeechRecognition = useCallback(() => {
+    const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
+    if (!SpeechRecognitionCtor) {
+      setPermissionInfo((prev) => prev ?? 'Live transcription is not supported in this browser. Recording will still be analyzed.');
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognitionCtor();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      speechRecognitionRef.current = recognition;
+      shouldRestartRecognitionRef.current = true;
+
+      recognition.onresult = (event: any) => {
+        let interimAggregate = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          const transcript: string = result[0]?.transcript?.trim() ?? '';
+          if (!transcript) continue;
+
+          if (result.isFinal) {
+            setTranscriptionHistory((prev) => [
+              ...prev,
+              { speaker: 'user', text: transcript, context: 'presentation' },
+            ]);
+            setLiveTranscript('');
+          } else {
+            interimAggregate = `${interimAggregate} ${transcript}`.trim();
+          }
+        }
+
+        if (interimAggregate) {
+          setLiveTranscript(interimAggregate);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error:', event);
+      };
+
+      recognition.onend = () => {
+        if (shouldRestartRecognitionRef.current && recognition) {
+          try {
+            recognition.start();
+          } catch (restartError) {
+            console.error('Speech recognition restart failed:', restartError);
+          }
+        }
+      };
+
+      recognition.start();
+    } catch (recognitionError) {
+      console.error('Speech recognition initialization failed:', recognitionError);
+      setPermissionInfo((prev) => prev ?? 'Live transcription could not be started. Recording will still be analyzed.');
+      speechRecognitionRef.current = null;
+      shouldRestartRecognitionRef.current = false;
+    }
+  }, [setTranscriptionHistory, setLiveTranscript, setPermissionInfo]);
 
   const handleStart = useCallback(async () => {
     setStatus(SessionStatus.CONNECTING);
@@ -241,6 +331,8 @@ const App: React.FC = () => {
 
         setLiveTranscript('Recording in progress...');
 
+        startSpeechRecognition();
+
         setStatus(SessionStatus.LISTENING);
     } catch (err) {
         const msg = getMediaErrorMessage(err);
@@ -249,7 +341,7 @@ const App: React.FC = () => {
         setStatus(SessionStatus.ERROR);
         stopMediaProcessing();
     }
-  }, [requestMediaStream, stopMediaProcessing]);
+  }, [requestMediaStream, stopMediaProcessing, startSpeechRecognition]);
 
   const handleFinishQAndA = useCallback(async (
     providedQuestions?: string[],

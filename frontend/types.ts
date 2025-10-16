@@ -16,22 +16,28 @@ export interface TranscriptionEntry {
 }
 
 export interface ScoreBreakdown {
-  Clarity: number;
-  Engagement: number;
-  Structure: number;
-  Delivery: number;
-  'Slide Usage': number;
+  clarity: number;
+  engagement: number;
+  structure: number;
+  delivery: number;
+  audienceConnection: number;
+  slideUsage: number;
 }
 
-export interface DetailedFeedback {
-  category: keyof ScoreBreakdown;
-  feedback: string;
+export interface ScoreReasons {
+  clarity: string;
+  engagement: string;
+  structure: string;
+  delivery: string;
+  audienceConnection: string;
+  slideUsage: string;
 }
 
 export interface PresentationFeedback {
   overallScore: number;
   overallSummary: string;
   scoreBreakdown: ScoreBreakdown;
+  scoreReasons: ScoreReasons;
   strengths: string[];
   areasForImprovement: string[];
   questionsAsked: string[];

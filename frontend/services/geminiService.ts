@@ -18,13 +18,26 @@ const feedbackSchema = {
     scoreBreakdown: {
       type: Type.OBJECT,
       properties: {
-        Clarity: { type: Type.NUMBER, description: 'Score (0-10) for clarity of speech and messaging.' },
-        Engagement: { type: Type.NUMBER, description: 'Score (0-10) for audience engagement and energy.' },
-        Structure: { type: Type.NUMBER, description: 'Score (0-10) for logical flow and organization.' },
-        Delivery: { type: Type.NUMBER, description: 'Score (0-10) for visual delivery from provided frames.' },
-        'Slide Usage': { type: Type.NUMBER, description: 'Score (0-10) for how effectively slides supported the story.' }
+        clarity: { type: Type.NUMBER, description: 'Score (0-10) for clarity of speech and messaging.' },
+        engagement: { type: Type.NUMBER, description: 'Score (0-10) for audience engagement and energy.' },
+        structure: { type: Type.NUMBER, description: 'Score (0-10) for logical flow and organization.' },
+        delivery: { type: Type.NUMBER, description: 'Score (0-10) for visual delivery from provided frames.' },
+        audienceConnection: { type: Type.NUMBER, description: 'Score (0-10) for audience attentiveness and reactions.' },
+        slideUsage: { type: Type.NUMBER, description: 'Score (0-10) for how effectively slides supported the story.' }
       },
-      required: ['Clarity', 'Engagement', 'Structure', 'Delivery', 'Slide Usage']
+      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage']
+    },
+    scoreReasons: {
+      type: Type.OBJECT,
+      properties: {
+        clarity: { type: Type.STRING, description: 'Reasoning behind the clarity score backed by presentation evidence.' },
+        engagement: { type: Type.STRING, description: 'Reasoning behind the engagement score backed by presentation evidence.' },
+        structure: { type: Type.STRING, description: 'Reasoning behind the structure score backed by presentation evidence.' },
+        delivery: { type: Type.STRING, description: 'Reasoning behind the delivery score backed by presentation evidence.' },
+        audienceConnection: { type: Type.STRING, description: 'Reasoning behind the audience connection score backed by presentation evidence.' },
+        slideUsage: { type: Type.STRING, description: 'Reasoning behind the slide usage score backed by presentation evidence.' }
+      },
+      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage']
     },
     strengths: {
       type: Type.ARRAY,
@@ -37,7 +50,7 @@ const feedbackSchema = {
       description: 'Actionable improvement suggestions.'
     }
   },
-  required: ['overallScore', 'overallSummary', 'scoreBreakdown', 'strengths', 'areasForImprovement']
+  required: ['overallScore', 'overallSummary', 'scoreBreakdown', 'scoreReasons', 'strengths', 'areasForImprovement']
 };
 
 const questionsSchema = {
@@ -142,10 +155,13 @@ export const getFinalPresentationFeedback = async (
     2. Engagement: Was the speaker energetic and engaging?
     3. Structure: Was the presentation well-organized with a logical flow?
     4. Delivery: Assess body language, eye contact, and gestures from the video frames.
-    5. Slide Usage: How effectively were the slides used as a visual aid vs. a script?
+    5. Audience Connection: Gauge attentiveness and reactions from the frames.
+    6. Slide Usage: How effectively were the slides used as a visual aid vs. a script?
 
     Based on these criteria, provide scores from 0-10 for each category in the 'scoreBreakdown'. Also, calculate a weighted
-    'overallScore'. Write a concise 'overallSummary', and list the top 3-4 'strengths' and 'areasForImprovement'.
+    'overallScore'. Write a concise 'overallSummary', list the top 3-4 'strengths' and 'areasForImprovement', and supply a
+    "scoreReasons" object with clear, evidence-grounded explanations (one per criterion) describing why each score was
+    assigned.
 
     ---
     MAIN PRESENTATION TRANSCRIPT:

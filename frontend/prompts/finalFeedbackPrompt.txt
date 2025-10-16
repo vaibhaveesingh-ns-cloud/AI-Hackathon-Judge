@@ -39,12 +39,20 @@ OUTPUT FORMAT
 Return **only** valid JSON:
 {
   "scoreBreakdown": {
-    "Clarity": number,
-    "Engagement": number,
-    "Structure": number,
-    "Delivery": number,
-    "Audience Connection": number,
-    "Slide Usage": number
+    "clarity": number,
+    "engagement": number,
+    "structure": number,
+    "delivery": number,
+    "audienceConnection": number,
+    "slideUsage": number
+  },
+  "scoreReasons": {
+    "clarity": "Evidence-based explanation of what drove the clarity score.",
+    "engagement": "Evidence-based explanation of what drove the engagement score.",
+    "structure": "Evidence-based explanation of what drove the structure score.",
+    "delivery": "Evidence-based explanation of what drove the delivery score.",
+    "audienceConnection": "Evidence-based explanation of what drove the audience connection score.",
+    "slideUsage": "Evidence-based explanation of what drove the slide usage score."
   },
   "overallScore": number,
   "overallSummary": "One concise paragraph summarizing overall performance",

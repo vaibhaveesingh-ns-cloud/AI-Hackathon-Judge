@@ -28,13 +28,27 @@ const feedbackSchema = {
       type: 'object',
       additionalProperties: false,
       properties: {
-        Clarity: { type: 'number' },
-        Engagement: { type: 'number' },
-        Structure: { type: 'number' },
-        Delivery: { type: 'number' },
-        'Slide Usage': { type: 'number' },
+        clarity: { type: 'number' },
+        engagement: { type: 'number' },
+        structure: { type: 'number' },
+        delivery: { type: 'number' },
+        audienceConnection: { type: 'number' },
+        slideUsage: { type: 'number' },
       },
-      required: ['Clarity', 'Engagement', 'Structure', 'Delivery', 'Slide Usage'],
+      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage'],
+    },
+    scoreReasons: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        clarity: { type: 'string' },
+        engagement: { type: 'string' },
+        structure: { type: 'string' },
+        delivery: { type: 'string' },
+        audienceConnection: { type: 'string' },
+        slideUsage: { type: 'string' },
+      },
+      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage'],
     },
     strengths: {
       type: 'array',
@@ -45,7 +59,7 @@ const feedbackSchema = {
       items: { type: 'string' },
     },
   },
-  required: ['overallScore', 'overallSummary', 'scoreBreakdown', 'strengths', 'areasForImprovement'],
+  required: ['overallScore', 'overallSummary', 'scoreBreakdown', 'scoreReasons', 'strengths', 'areasForImprovement'],
 } as const;
 
 const questionsSchema = {

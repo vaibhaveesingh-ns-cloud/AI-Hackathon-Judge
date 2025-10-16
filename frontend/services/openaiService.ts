@@ -151,7 +151,8 @@ export const generateQuestions = async (
 
 export const getFinalPresentationFeedback = async (
   transcriptionHistory: TranscriptionEntry[],
-  videoFrames: string[],
+  presenterFrames: string[],
+  audienceFrames: string[],
   slideTexts: string[],
   questions: string[] = []
 ): Promise<PresentationFeedback | null> => {
@@ -174,7 +175,7 @@ export const getFinalPresentationFeedback = async (
     ? slideTexts.map((text, i) => `Slide ${i + 1}:\n${text}`).join('\n\n')
     : 'No slides were provided.';
 
-  const prompt = `As an expert presentation coach, analyze the following materials: the main presentation transcript, the list of questions raised during Q&A, periodic video frames, and the text content from the presentation slides.
+  const prompt = `As an expert presentation coach, analyze the following materials: the main presentation transcript, the list of questions raised during Q&A, periodic PRESENTERCAM frames (direct feed of the speaker), periodic AUDIENCECAM frames (audience perspective), and the text content from the presentation slides.
 
 Ignore any Q&A answers when evaluating performance; only the presentation delivery and slides should influence scores. Still, echo the provided questions in a "questionsAsked" field of your JSON so they can be displayed on the evaluation scorecard.
 
@@ -182,8 +183,9 @@ CRITERIA (scores must be based only on the main presentation delivery and slide 
 1. Clarity: Was the message clear and easy to understand?
 2. Engagement: Was the speaker energetic and engaging?
 3. Structure: Was the presentation well-organized with a logical flow?
-4. Delivery: Assess body language, eye contact, and gestures from the video frames.
-5. Slide Usage: How effectively were the slides used as a visual aid vs. a script?
+4. Delivery: Assess body language, eye contact, and gestures primarily from the PRESENTERCAM frames, considering posture, confidence, and vocal focus.
+5. Audience Connection: Evaluate audience reactions and attentiveness from the AUDIENCECAM frames to measure how well the presenter is holding attention.
+6. Slide Usage: How effectively were the slides used as a visual aid vs. a script?
 
 Based on these criteria, provide scores from 0-10 for each category in the "scoreBreakdown". Also, calculate a weighted "overallScore". Write a concise "overallSummary", and list the top 3-4 "strengths" and "areasForImprovement".
 ---
@@ -204,7 +206,17 @@ ${derivedQuestions.length > 0 ? derivedQuestions.join('\n\n') : 'No Q&A session 
     type: 'message',
   };
 
-  videoFrames.slice(0, 6).forEach((frame) => {
+  presenterFrames.slice(0, 4).forEach((frame, index) => {
+    userMessage.content.push({ type: 'input_text', text: `PRESENTERCAM frame ${index + 1}` });
+    userMessage.content.push({
+      type: 'input_image',
+      image_url: frame.startsWith('data:') ? frame : `data:image/jpeg;base64,${frame}`,
+      detail: 'auto',
+    });
+  });
+
+  audienceFrames.slice(0, 4).forEach((frame, index) => {
+    userMessage.content.push({ type: 'input_text', text: `AUDIENCECAM frame ${index + 1}` });
     userMessage.content.push({
       type: 'input_image',
       image_url: frame.startsWith('data:') ? frame : `data:image/jpeg;base64,${frame}`,

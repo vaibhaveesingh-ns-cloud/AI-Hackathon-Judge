@@ -57,6 +57,10 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [hasMediaPermissions, setHasMediaPermissions] = useState(false);
   const [permissionInfo, setPermissionInfo] = useState<string | null>(null);
+  const [elapsedTime, setElapsedTime] = useState<string>('00:00:00');
+  const [listeningStartTime, setListeningStartTime] = useState<number | null>(null);
+  const [isMicrophoneMuted, setIsMicrophoneMuted] = useState<boolean>(false);
+  const [isVideoPaused, setIsVideoPaused] = useState<boolean>(false);
 
   const [slides, setSlides] = useState<string[]>([]);
   const [currentSlide, setCurrentSlide] = useState<number>(0);
@@ -95,6 +99,43 @@ const App: React.FC = () => {
         .play()
         .catch((e) => console.error('Video play failed:', e));
     }
+  }, []);
+
+  const toggleMicrophone = useCallback(() => {
+    const stream = speakerStreamRef.current;
+    if (!stream) return;
+
+    setIsMicrophoneMuted((prevMuted) => {
+      const nextMuted = !prevMuted;
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = !nextMuted;
+      });
+      return nextMuted;
+    });
+  }, []);
+
+  const toggleVideo = useCallback(() => {
+    const streams: MediaStream[] = [];
+    const addUniqueStream = (candidate: MediaStream | null) => {
+      if (candidate && !streams.includes(candidate)) {
+        streams.push(candidate);
+      }
+    };
+
+    addUniqueStream(speakerStreamRef.current);
+    addUniqueStream(listenerStreamRef.current);
+
+    if (streams.length === 0) return;
+
+    setIsVideoPaused((prevPaused) => {
+      const nextPaused = !prevPaused;
+      streams.forEach((stream) => {
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = !nextPaused;
+        });
+      });
+      return nextPaused;
+    });
   }, []);
 
   const startFrameCapture = useCallback((
@@ -217,6 +258,27 @@ const App: React.FC = () => {
     }
   }, [status, hasMediaPermissions]);
 
+  useEffect(() => {
+    if (status !== SessionStatus.LISTENING || listeningStartTime === null) {
+      setElapsedTime('00:00:00');
+      return;
+    }
+
+    const updateElapsed = () => {
+      const diff = Math.max(0, Date.now() - listeningStartTime);
+      const hours = Math.floor(diff / 3_600_000);
+      const minutes = Math.floor((diff % 3_600_000) / 60_000);
+      const seconds = Math.floor((diff % 60_000) / 1_000);
+      setElapsedTime(
+        `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+      );
+    };
+
+    updateElapsed();
+    const intervalId = window.setInterval(updateElapsed, 1_000);
+    return () => clearInterval(intervalId);
+  }, [status, listeningStartTime]);
+
   const stopSpeechRecognition = useCallback(() => {
     shouldRestartRecognitionRef.current = false;
     const recognition = speechRecognitionRef.current;
@@ -244,6 +306,8 @@ const App: React.FC = () => {
     }
     mediaRecorderRef.current = null;
     stopSpeechRecognition();
+    setListeningStartTime(null);
+    setElapsedTime('00:00:00');
   }, [stopStream, stopSpeechRecognition]);
 
   const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
@@ -316,6 +380,8 @@ const App: React.FC = () => {
     setPptxFile(null);
     setSlides([]);
     recordedAudioChunksRef.current = [];
+    setListeningStartTime(null);
+    setElapsedTime('00:00:00');
   }
 
   const startSpeechRecognition = useCallback(() => {
@@ -460,6 +526,8 @@ const App: React.FC = () => {
 
         startSpeechRecognition();
 
+        setListeningStartTime(Date.now());
+        setElapsedTime('00:00:00');
         setStatus(SessionStatus.LISTENING);
     } catch (err) {
         const msg = getMediaErrorMessage(err);
@@ -480,8 +548,13 @@ const App: React.FC = () => {
     const finalHistory = historyOverride ?? transcriptionHistory;
     const questionSet = providedQuestions ?? questions;
 
-    const combinedFrames = [...speakerVideoFramesRef.current, ...listenerVideoFramesRef.current];
-    const finalFeedback = await getFinalPresentationFeedback(finalHistory, combinedFrames, slides, questionSet);
+    const finalFeedback = await getFinalPresentationFeedback(
+      finalHistory,
+      speakerVideoFramesRef.current,
+      listenerVideoFramesRef.current,
+      slides,
+      questionSet
+    );
     if (finalFeedback) {
       setFeedback(finalFeedback);
       setStatus(SessionStatus.COMPLETE);
@@ -571,98 +644,191 @@ const App: React.FC = () => {
     switch (status) {
       case SessionStatus.COMPLETE:
         return <FeedbackCard feedback={feedback} />;
-      case SessionStatus.LISTENING:
+      case SessionStatus.LISTENING: {
+        const [hours = '00', minutes = '00', seconds = '00'] = elapsedTime.split(':');
+
         return (
-          <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 w-full h-[75vh]">
-            <div className="xl:col-span-2 bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
-              <div className="flex-grow overflow-y-auto pr-2">
-                <h3 className="text-xl font-bold text-indigo-400 mb-4 sticky top-0 bg-slate-900 pb-2">Slide {currentSlide + 1} of {slides.length}</h3>
-                <p className="text-slate-300 whitespace-pre-wrap text-lg leading-relaxed">{slides[currentSlide] || "This slide has no text content."}</p>
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-6 w-full">
+            <div className="flex flex-col gap-6">
+              <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 shadow-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-2xl font-semibold text-slate-100">Presentation Evaluator</h2>
+                    <p className="text-xs uppercase tracking-[0.2em] text-indigo-300/80">Live session</p>
+                  </div>
+                  <div className="flex items-center gap-3 bg-slate-950/70 border border-slate-800 rounded-xl px-4 py-2">
+                    <span className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                      Recording
+                    </span>
+                    <div className="flex items-center gap-1 text-slate-200">
+                      <span className="font-mono text-lg">{hours}</span>
+                      <span>:</span>
+                      <span className="font-mono text-lg">{minutes}</span>
+                      <span>:</span>
+                      <span className="font-mono text-lg">{seconds}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-6">
+                  <div className="bg-slate-950/80 border border-slate-800 rounded-2xl overflow-hidden shadow-inner">
+                    <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/60">
+                      <div>
+                        <h3 className="text-lg font-semibold text-slate-100">Presenter View</h3>
+                        <p className="text-xs uppercase tracking-wide text-slate-400">Speaker camera feed</p>
+                      </div>
+                      <select
+                        className="bg-slate-900 border border-slate-700/80 rounded-lg text-sm text-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={selectedSpeakerCamera}
+                        onChange={(event) => setSelectedSpeakerCamera(event.target.value)}
+                      >
+                        {cameraDevices.map((device, index) => (
+                          <option key={device.deviceId || index} value={device.deviceId}>
+                            {formatCameraLabel(device, index)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="relative bg-slate-950 aspect-video">
+                      {speakerStreamRef.current ? (
+                        <video ref={speakerVideoRef} muted playsInline className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-slate-500 text-sm">
+                          Camera loading...
+                        </div>
+                      )}
+                      <div className="absolute top-4 left-4 flex items-center gap-2 bg-slate-900/70 backdrop-blur-sm px-3 py-1.5 rounded-full text-xs uppercase tracking-wide text-slate-200">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        Presenter
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-6">
+                    <div className="bg-slate-950/80 border border-slate-800 rounded-2xl overflow-hidden shadow-inner">
+                      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/60">
+                        <div>
+                          <h3 className="text-lg font-semibold text-slate-100">Audience View</h3>
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Panel perspective</p>
+                        </div>
+                        <select
+                          className="bg-slate-900 border border-slate-700/80 rounded-lg text-sm text-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={selectedListenerCamera}
+                          onChange={(event) => setSelectedListenerCamera(event.target.value)}
+                        >
+                          {cameraDevices.map((device, index) => (
+                            <option key={device.deviceId || index} value={device.deviceId}>
+                              {formatCameraLabel(device, index)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="relative bg-slate-950 aspect-video">
+                        {listenerStreamRef.current ? (
+                          <video ref={listenerVideoRef} muted playsInline className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-slate-500 text-sm">
+                            Camera loading...
+                          </div>
+                        )}
+                        <div className="absolute top-4 left-4 flex items-center gap-2 bg-slate-900/70 backdrop-blur-sm px-3 py-1.5 rounded-full text-xs uppercase tracking-wide text-slate-200">
+                          <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
+                          Audience
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5">
+                      <h4 className="text-base font-semibold text-slate-100 mb-3">Controls & Status</h4>
+                      <div className="flex flex-wrap items-center gap-4">
+                        <button
+                          type="button"
+                          onClick={toggleMicrophone}
+                          className={`flex items-center justify-center w-12 h-12 rounded-full transition-colors ${
+                            isMicrophoneMuted ? 'bg-slate-800 text-slate-400 border border-slate-700' : 'bg-indigo-500 text-white shadow-lg shadow-indigo-900/40'
+                          }`}
+                        >
+                          <i className={`fas ${isMicrophoneMuted ? 'fa-microphone-slash' : 'fa-microphone'}`}></i>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={toggleVideo}
+                          className={`flex items-center justify-center w-12 h-12 rounded-full transition-colors ${
+                            isVideoPaused ? 'bg-slate-800 text-slate-400 border border-slate-700' : 'bg-slate-800 text-slate-200 border border-slate-700'
+                          }`}
+                        >
+                          <i className={`fas ${isVideoPaused ? 'fa-video-slash' : 'fa-video'}`}></i>
+                        </button>
+                        <div className="flex items-center gap-3 text-sm text-slate-300">
+                          <div className="flex flex-col">
+                            <span className="text-xs uppercase tracking-wide text-slate-500">Microphone</span>
+                            <span>{isMicrophoneMuted ? 'Muted' : 'Active'}</span>
+                          </div>
+                          <div className="h-6 w-px bg-slate-700"></div>
+                          <div className="flex flex-col">
+                            <span className="text-xs uppercase tracking-wide text-slate-500">Video</span>
+                            <span>{isVideoPaused ? 'Paused' : 'Streaming'}</span>
+                          </div>
+                          <div className="h-6 w-px bg-slate-700"></div>
+                          <div className="flex flex-col">
+                            <span className="text-xs uppercase tracking-wide text-slate-500">Status</span>
+                            <span>Listening</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="flex justify-center items-center gap-4 mt-4 flex-shrink-0">
-                <ControlButton onClick={handlePrevSlide} disabled={currentSlide === 0} variant="secondary"><i className="fas fa-arrow-left"></i></ControlButton>
-                <ControlButton onClick={handleNextSlide} disabled={currentSlide === slides.length - 1} variant="secondary"><i className="fas fa-arrow-right"></i></ControlButton>
+
+              <div className="bg-slate-950/70 border border-slate-800 rounded-3xl p-6 shadow-xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-slate-100">Slides & Notes</h3>
+                  <div className="flex gap-2">
+                    <ControlButton onClick={handlePrevSlide} disabled={currentSlide === 0} variant="secondary">
+                      <i className="fas fa-chevron-left"></i>
+                    </ControlButton>
+                    <ControlButton onClick={handleNextSlide} disabled={currentSlide === slides.length - 1} variant="secondary">
+                      <i className="fas fa-chevron-right"></i>
+                    </ControlButton>
+                  </div>
+                </div>
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 h-64 overflow-y-auto text-left">
+                  <h4 className="text-sm font-semibold text-indigo-300 mb-2">Slide {currentSlide + 1} of {slides.length}</h4>
+                  <p className="text-slate-200 whitespace-pre-wrap leading-relaxed">
+                    {slides[currentSlide] || 'This slide has no text content.'}
+                  </p>
+                </div>
               </div>
             </div>
-            <div className="xl:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 flex flex-col shadow-lg">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-lg font-semibold text-indigo-400">Speaker Camera</h3>
-                    <p className="text-xs text-slate-400">Presenter point of view</p>
-                  </div>
-                  <select
-                    className="bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 px-3 py-1"
-                    value={selectedSpeakerCamera}
-                    onChange={(event) => setSelectedSpeakerCamera(event.target.value)}
-                  >
-                    {cameraDevices.map((device, index) => (
-                      <option key={device.deviceId || index} value={device.deviceId}>
-                        {formatCameraLabel(device, index)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-950 flex-1 min-h-[220px]">
-                  {speakerStreamRef.current ? (
-                    <video ref={speakerVideoRef} muted playsInline className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-slate-500 text-sm">
-                      Camera loading...
-                    </div>
-                  )}
-                  <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-slate-900/70 backdrop-blur-sm px-3 py-1.5 rounded-full text-xs uppercase tracking-wide text-slate-200">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                    Speaker
-                  </div>
-                </div>
-              </div>
 
-              <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 flex flex-col shadow-lg">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-lg font-semibold text-indigo-400">Audience Camera</h3>
-                    <p className="text-xs text-slate-400">Judge perspective</p>
-                  </div>
-                  <select
-                    className="bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 px-3 py-1"
-                    value={selectedListenerCamera}
-                    onChange={(event) => setSelectedListenerCamera(event.target.value)}
-                  >
-                    {cameraDevices.map((device, index) => (
-                      <option key={device.deviceId || index} value={device.deviceId}>
-                        {formatCameraLabel(device, index)}
-                      </option>
-                    ))}
-                  </select>
+            <aside className="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 shadow-2xl h-full flex flex-col">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-100">Live Transcription</h3>
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Automated captions</p>
                 </div>
-                <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-950 flex-1 min-h-[220px]">
-                  {listenerStreamRef.current ? (
-                    <video ref={listenerVideoRef} muted playsInline className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-slate-500 text-sm">
-                      Camera loading...
-                    </div>
-                  )}
-                  <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-slate-900/70 backdrop-blur-sm px-3 py-1.5 rounded-full text-xs uppercase tracking-wide text-slate-200">
-                    <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
-                    Audience
-                  </div>
-                </div>
+                <i className="fas fa-wave-square text-indigo-400 text-xl"></i>
               </div>
-
-              <div className="md:col-span-2 bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl p-4 flex flex-col shadow-lg min-h-[180px]">
-                <h3 className="text-lg font-semibold text-indigo-400 mb-2 flex-shrink-0">Live Transcript</h3>
-                <div className="overflow-y-auto flex-grow text-slate-300">
-                  {transcriptionHistory.filter((entry) => entry.context === 'presentation').map((entry, index) => (
-                    <p key={index}>{entry.text}</p>
+              <div className="flex-1 overflow-y-auto pr-2 space-y-3 text-left">
+                {transcriptionHistory
+                  .filter((entry) => entry.context === 'presentation')
+                  .slice(-20)
+                  .map((entry, index) => (
+                    <div key={index} className="text-sm leading-relaxed text-slate-300">
+                      <span className="text-indigo-300/90 font-mono text-xs mr-2">{String(index + 1).padStart(2, '0')}</span>
+                      {entry.text}
+                    </div>
                   ))}
-                  <p className="text-slate-400/80">{liveTranscript}</p>
-                </div>
+                <p className="text-indigo-200/80 text-sm leading-relaxed font-medium">
+                  {liveTranscript || 'Recording in progress...'}
+                </p>
               </div>
-            </div>
+            </aside>
           </div>
         );
+      }
       case SessionStatus.PROCESSING:
         return (
           <div className="flex flex-col items-center gap-6">

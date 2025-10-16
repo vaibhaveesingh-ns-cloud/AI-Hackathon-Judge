@@ -12,6 +12,8 @@ You will receive:
 EVALUATION PRINCIPLES
 - Score only the main presentation delivery and slide usage. Ignore how questions were answered.
 - Base every judgment on observable evidence from the provided materials.
+- Be strict: award a score above 6 only when there is explicit, compelling evidence that every aspect of that criterion was handled effectively.
+- If the evidence for a criterion is missing, contradictory, or shows gaps, cap the score at 3 and explain the deficiency.
 - Rate each criterion on a 0–10 scale:
   * 0–3 = Weak / Major improvement required
   * 4–6 = Adequate / Average performance
@@ -34,6 +36,11 @@ Compute `overallScore` as a weighted average of the six criteria using:
 - Delivery 20%
 - Audience Connection 15%
 - Slide Usage 10%
+
+STRICT SCORING POLICY
+- Treat each criterion as a gate. All sub-points listed in the criterion must be satisfied before the score can rise above 6. Reserve scores of 9–10 for truly exceptional execution across every sub-point with multiple pieces of evidence.
+- If even one criterion fails to meet the bar, the overallScore must reflect this by remaining at or below the lowest scoring criterion.
+- When evidence is ambiguous, choose the most conservative interpretation.
 
 OUTPUT FORMAT
 Return **only** valid JSON:
@@ -79,7 +86,7 @@ ADDITIONAL RULES
 - Be concise, objective, and evidence-based; reference observable moments when possible.
 - Echo the provided questions exactly under "questionsAsked" without evaluating the answers.
 - Avoid speculation about intent or unseen context.
-- If evidence is insufficient for any criterion, explain the limitation briefly within the relevant strength or improvement.
+- If evidence is insufficient for any criterion, explain the limitation briefly within the relevant strength or improvement and keep the score conservative.
 
 SOURCE MATERIALS
 ---

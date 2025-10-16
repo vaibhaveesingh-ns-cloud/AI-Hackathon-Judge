@@ -38,6 +38,7 @@ export interface PresentationFeedback {
   overallSummary: string;
   scoreBreakdown: ScoreBreakdown;
   scoreReasons: ScoreReasons;
+  presentationDuration?: string;
   strengths: string[];
   areasForImprovement: string[];
   questionsAsked: string[];

@@ -176,8 +176,32 @@ export const getFinalPresentationFeedback = async (
     .map((entry) => entry.text)
     .join(' ');
 
-  if (!presentationTranscript.trim()) {
-    return null;
+  const transcriptWordCount = presentationTranscript.trim()
+    ? presentationTranscript.trim().split(/\s+/).length
+    : 0;
+
+  const presenterEvidenceFrames = presenterFrames.filter(
+    (frame) => typeof frame === 'string' && frame.trim().length > 0
+  );
+  const audienceEvidenceFrames = audienceFrames.filter(
+    (frame) => typeof frame === 'string' && frame.trim().length > 0
+  );
+
+  const MAX_TOKENS = 6_000;
+  const MIN_TRANSCRIPT_WORDS = 30;
+  const MIN_PRESENTER_FRAMES = 1;
+  const MIN_AUDIENCE_FRAMES = 1;
+
+  if (transcriptWordCount < MIN_TRANSCRIPT_WORDS) {
+    throw new Error('Insufficient speech captured. Record at least 30 words before requesting feedback.');
+  }
+
+  if (presenterEvidenceFrames.length < MIN_PRESENTER_FRAMES) {
+    throw new Error('Presenter camera feed was not captured. Ensure the presenter remains visible during recording.');
+  }
+
+  if (audienceEvidenceFrames.length < MIN_AUDIENCE_FRAMES) {
+    throw new Error('Audience camera feed was not captured. Point the audience camera toward listeners and try again.');
   }
 
   const derivedQuestions = questions.length
@@ -201,7 +225,7 @@ export const getFinalPresentationFeedback = async (
     type: 'message',
   };
 
-  presenterFrames.slice(0, 4).forEach((frame, index) => {
+  presenterEvidenceFrames.slice(0, 4).forEach((frame, index) => {
     userMessage.content.push({ type: 'input_text', text: `PRESENTERCAM frame ${index + 1}` });
     userMessage.content.push({
       type: 'input_image',
@@ -210,7 +234,7 @@ export const getFinalPresentationFeedback = async (
     });
   });
 
-  audienceFrames.slice(0, 4).forEach((frame, index) => {
+  audienceEvidenceFrames.slice(0, 4).forEach((frame, index) => {
     userMessage.content.push({ type: 'input_text', text: `AUDIENCECAM frame ${index + 1}` });
     userMessage.content.push({
       type: 'input_image',

@@ -65,25 +65,126 @@ const App: React.FC = () => {
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
 
   const [questions, setQuestions] = useState<string[]>([]);
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedSpeakerCamera, setSelectedSpeakerCamera] = useState<string>('');
+  const [selectedListenerCamera, setSelectedListenerCamera] = useState<string>('');
 
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const videoFramesRef = useRef<string[]>([]);
-  const frameIntervalRef = useRef<number | null>(null);
+  const speakerStreamRef = useRef<MediaStream | null>(null);
+  const listenerStreamRef = useRef<MediaStream | null>(null);
+  const speakerVideoRef = useRef<HTMLVideoElement>(null);
+  const listenerVideoRef = useRef<HTMLVideoElement>(null);
+  const speakerCanvasRef = useRef<HTMLCanvasElement>(null);
+  const listenerCanvasRef = useRef<HTMLCanvasElement>(null);
+  const speakerVideoFramesRef = useRef<string[]>([]);
+  const listenerVideoFramesRef = useRef<string[]>([]);
+  const speakerFrameIntervalRef = useRef<number | null>(null);
+  const listenerFrameIntervalRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedAudioChunksRef = useRef<Blob[]>([]);
   const speechRecognitionRef = useRef<any>(null);
   const shouldRestartRecognitionRef = useRef<boolean>(false);
 
-  useEffect(() => {
-    if (status === SessionStatus.LISTENING && videoRef.current && mediaStreamRef.current) {
-        if (videoRef.current.srcObject !== mediaStreamRef.current) {
-            videoRef.current.srcObject = mediaStreamRef.current;
-            videoRef.current.play().catch(e => console.error("Video play failed:", e));
-        }
+  const formatCameraLabel = (device: MediaDeviceInfo, index: number) =>
+    device.label || `Camera ${index + 1}`;
+
+  const attachStreamToVideo = useCallback((videoElement: HTMLVideoElement | null, stream: MediaStream | null) => {
+    if (!videoElement || !stream) return;
+    if (videoElement.srcObject !== stream) {
+      videoElement.srcObject = stream;
+      videoElement
+        .play()
+        .catch((e) => console.error('Video play failed:', e));
     }
-  }, [status]);
+  }, []);
+
+  const startFrameCapture = useCallback((
+    videoElementRef: React.MutableRefObject<HTMLVideoElement | null>,
+    canvasElementRef: React.MutableRefObject<HTMLCanvasElement | null>,
+    framesRef: React.MutableRefObject<string[]>,
+    intervalRef: React.MutableRefObject<number | null>
+  ) => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    intervalRef.current = window.setInterval(() => {
+      const videoEl = videoElementRef.current;
+      const canvasEl = canvasElementRef.current;
+      if (!videoEl || !canvasEl) return;
+      const frame = getFrameAsBase64(videoEl, canvasEl);
+      if (frame) framesRef.current.push(frame);
+    }, FRAME_CAPTURE_INTERVAL);
+  }, []);
+
+  const stopStream = useCallback((
+    streamRef: React.MutableRefObject<MediaStream | null>,
+    intervalRef: React.MutableRefObject<number | null>,
+    videoElementRef: React.MutableRefObject<HTMLVideoElement | null>
+  ) => {
+    const stream = streamRef.current;
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    if (videoElementRef.current) {
+      videoElementRef.current.srcObject = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (status !== SessionStatus.LISTENING) return;
+    attachStreamToVideo(speakerVideoRef.current, speakerStreamRef.current);
+    attachStreamToVideo(listenerVideoRef.current, listenerStreamRef.current);
+  }, [status, attachStreamToVideo]);
+
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return;
+
+    const updateDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter((device) => device.kind === 'videoinput');
+        setCameraDevices(videoDevices);
+
+        if (!selectedSpeakerCamera && videoDevices[0]) {
+          setSelectedSpeakerCamera(videoDevices[0].deviceId);
+        }
+
+        if (!selectedListenerCamera) {
+          const fallback = videoDevices.find((device) => device.deviceId !== selectedSpeakerCamera);
+          setSelectedListenerCamera((fallback ?? videoDevices[1] ?? videoDevices[0])?.deviceId ?? '');
+        }
+      } catch (deviceError) {
+        console.error('Device enumeration failed:', deviceError);
+      }
+    };
+
+    if (hasMediaPermissions) {
+      updateDevices();
+      const handler = () => updateDevices();
+
+      if ((navigator.mediaDevices as any).addEventListener) {
+        (navigator.mediaDevices as any).addEventListener('devicechange', handler);
+        return () => {
+          (navigator.mediaDevices as any).removeEventListener('devicechange', handler);
+        };
+      }
+
+      const mediaDevices = navigator.mediaDevices as any;
+      const prevHandler = mediaDevices.ondevicechange;
+      mediaDevices.ondevicechange = handler;
+      return () => {
+        mediaDevices.ondevicechange = prevHandler ?? null;
+      };
+    }
+  }, [hasMediaPermissions, selectedSpeakerCamera, selectedListenerCamera]);
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !navigator.permissions?.query) return;
@@ -134,12 +235,8 @@ const App: React.FC = () => {
   }, []);
 
   const stopMediaProcessing = useCallback(() => {
-    if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(track => track.stop());
-    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-    if (videoRef.current) videoRef.current.srcObject = null;
-    
-    mediaStreamRef.current = null;
-    frameIntervalRef.current = null;
+    stopStream(speakerStreamRef, speakerFrameIntervalRef, speakerVideoRef);
+    stopStream(listenerStreamRef, listenerFrameIntervalRef, listenerVideoRef);
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
@@ -147,7 +244,7 @@ const App: React.FC = () => {
     }
     mediaRecorderRef.current = null;
     stopSpeechRecognition();
-  }, []);
+  }, [stopStream, stopSpeechRecognition]);
 
   const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
     const recorder = mediaRecorderRef.current;
@@ -182,11 +279,11 @@ const App: React.FC = () => {
     });
   }, []);
 
-  const requestMediaStream = useCallback(async () => {
+  const requestMediaStream = useCallback(async (constraints: MediaStreamConstraints = { audio: true, video: true }) => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('Media devices API is not supported in this browser.');
     }
-    return navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+    return navigator.mediaDevices.getUserMedia(constraints);
   }, []);
 
   const handleRequestPermissions = useCallback(async () => {
@@ -206,19 +303,19 @@ const App: React.FC = () => {
   }, [requestMediaStream]);
 
   const resetState = () => {
+    stopMediaProcessing();
     setStatus(SessionStatus.IDLE);
     setError(null);
     setFeedback(null);
     setTranscriptionHistory([]);
     setLiveTranscript("");
-    videoFramesRef.current = [];
+    speakerVideoFramesRef.current = [];
+    listenerVideoFramesRef.current = [];
     setCurrentSlide(0);
     setQuestions([]);
     setPptxFile(null);
     setSlides([]);
     recordedAudioChunksRef.current = [];
-    mediaRecorderRef.current = null;
-    stopSpeechRecognition();
   }
 
   const startSpeechRecognition = useCallback(() => {
@@ -289,28 +386,58 @@ const App: React.FC = () => {
     setFeedback(null);
     setTranscriptionHistory([]);
     setLiveTranscript("");
-    videoFramesRef.current = [];
+    speakerVideoFramesRef.current = [];
+    listenerVideoFramesRef.current = [];
     setCurrentSlide(0);
     setQuestions([]);
 
     try {
-        const stream = await requestMediaStream();
-        setHasMediaPermissions(true);
-        setPermissionInfo(null);
-        mediaStreamRef.current = stream;
+        const speakerConstraints: MediaStreamConstraints = {
+            audio: true,
+            video: selectedSpeakerCamera
+                ? { deviceId: { exact: selectedSpeakerCamera } }
+                : true,
+        };
 
-        frameIntervalRef.current = window.setInterval(() => {
-            if (videoRef.current && canvasRef.current) {
-                const frame = getFrameAsBase64(videoRef.current, canvasRef.current);
-                if (frame) videoFramesRef.current.push(frame);
+        const listenerConstraints: MediaStreamConstraints = {
+            audio: false,
+            video: selectedListenerCamera
+                ? { deviceId: { exact: selectedListenerCamera } }
+                : true,
+        };
+
+        const speakerStream = await requestMediaStream(speakerConstraints);
+        let listenerStream: MediaStream | null = null;
+
+        if (selectedListenerCamera && selectedListenerCamera === selectedSpeakerCamera) {
+            listenerStream = speakerStream;
+        } else {
+            try {
+                listenerStream = await requestMediaStream(listenerConstraints);
+            } catch (listenerError) {
+                console.warn('Unable to start audience camera stream, falling back to presenter stream.', listenerError);
+                listenerStream = speakerStream;
             }
-        }, FRAME_CAPTURE_INTERVAL);
+        }
+
+        speakerStreamRef.current = speakerStream;
+        listenerStreamRef.current = listenerStream;
+
+        attachStreamToVideo(speakerVideoRef.current, speakerStreamRef.current);
+        if (listenerStreamRef.current) {
+            attachStreamToVideo(listenerVideoRef.current, listenerStreamRef.current);
+        }
+
+        startFrameCapture(speakerVideoRef, speakerCanvasRef, speakerVideoFramesRef, speakerFrameIntervalRef);
+        if (listenerStreamRef.current) {
+            startFrameCapture(listenerVideoRef, listenerCanvasRef, listenerVideoFramesRef, listenerFrameIntervalRef);
+        }
 
         if (typeof MediaRecorder === 'undefined') {
             throw new Error('Audio recording is not supported in this browser.');
         }
 
-        const audioTracks = stream.getAudioTracks();
+        const audioTracks = speakerStream.getAudioTracks();
         if (audioTracks.length === 0) {
             throw new Error('No audio track detected. Please verify your microphone.');
         }
@@ -341,7 +468,7 @@ const App: React.FC = () => {
         setStatus(SessionStatus.ERROR);
         stopMediaProcessing();
     }
-  }, [requestMediaStream, stopMediaProcessing, startSpeechRecognition]);
+  }, [requestMediaStream, stopMediaProcessing, startSpeechRecognition, attachStreamToVideo, startFrameCapture, selectedSpeakerCamera, selectedListenerCamera]);
 
   const handleFinishQAndA = useCallback(async (
     providedQuestions?: string[],
@@ -353,7 +480,8 @@ const App: React.FC = () => {
     const finalHistory = historyOverride ?? transcriptionHistory;
     const questionSet = providedQuestions ?? questions;
 
-    const finalFeedback = await getFinalPresentationFeedback(finalHistory, videoFramesRef.current, slides, questionSet);
+    const combinedFrames = [...speakerVideoFramesRef.current, ...listenerVideoFramesRef.current];
+    const finalFeedback = await getFinalPresentationFeedback(finalHistory, combinedFrames, slides, questionSet);
     if (finalFeedback) {
       setFeedback(finalFeedback);
       setStatus(SessionStatus.COMPLETE);
@@ -389,7 +517,7 @@ const App: React.FC = () => {
     }
 
     const updatedHistory: TranscriptionEntry[] = [
-      { speaker: 'user', text: presentationTranscript, context: 'presentation' }
+      { speaker: 'user', text: presentationTranscript, context: 'presentation' },
     ];
     setTranscriptionHistory(updatedHistory);
     setLiveTranscript(presentationTranscript);
@@ -445,8 +573,8 @@ const App: React.FC = () => {
         return <FeedbackCard feedback={feedback} />;
       case SessionStatus.LISTENING:
         return (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full h-[75vh]">
-            <div className="lg:col-span-2 bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
+          <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 w-full h-[75vh]">
+            <div className="xl:col-span-2 bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
               <div className="flex-grow overflow-y-auto pr-2">
                 <h3 className="text-xl font-bold text-indigo-400 mb-4 sticky top-0 bg-slate-900 pb-2">Slide {currentSlide + 1} of {slides.length}</h3>
                 <p className="text-slate-300 whitespace-pre-wrap text-lg leading-relaxed">{slides[currentSlide] || "This slide has no text content."}</p>
@@ -456,14 +584,79 @@ const App: React.FC = () => {
                 <ControlButton onClick={handleNextSlide} disabled={currentSlide === slides.length - 1} variant="secondary"><i className="fas fa-arrow-right"></i></ControlButton>
               </div>
             </div>
-            <div className="flex flex-col gap-6 h-full">
-              <div className="flex-1 bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-lg min-h-[250px]">
-                <video ref={videoRef} muted playsInline className="w-full h-full object-cover" />
+            <div className="xl:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 flex flex-col shadow-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-lg font-semibold text-indigo-400">Speaker Camera</h3>
+                    <p className="text-xs text-slate-400">Presenter point of view</p>
+                  </div>
+                  <select
+                    className="bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 px-3 py-1"
+                    value={selectedSpeakerCamera}
+                    onChange={(event) => setSelectedSpeakerCamera(event.target.value)}
+                  >
+                    {cameraDevices.map((device, index) => (
+                      <option key={device.deviceId || index} value={device.deviceId}>
+                        {formatCameraLabel(device, index)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-950 flex-1 min-h-[220px]">
+                  {speakerStreamRef.current ? (
+                    <video ref={speakerVideoRef} muted playsInline className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-slate-500 text-sm">
+                      Camera loading...
+                    </div>
+                  )}
+                  <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-slate-900/70 backdrop-blur-sm px-3 py-1.5 rounded-full text-xs uppercase tracking-wide text-slate-200">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Speaker
+                  </div>
+                </div>
               </div>
-              <div className="flex-1 bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl p-4 flex flex-col shadow-lg min-h-[250px]">
+
+              <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 flex flex-col shadow-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-lg font-semibold text-indigo-400">Audience Camera</h3>
+                    <p className="text-xs text-slate-400">Judge perspective</p>
+                  </div>
+                  <select
+                    className="bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 px-3 py-1"
+                    value={selectedListenerCamera}
+                    onChange={(event) => setSelectedListenerCamera(event.target.value)}
+                  >
+                    {cameraDevices.map((device, index) => (
+                      <option key={device.deviceId || index} value={device.deviceId}>
+                        {formatCameraLabel(device, index)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-slate-950 flex-1 min-h-[220px]">
+                  {listenerStreamRef.current ? (
+                    <video ref={listenerVideoRef} muted playsInline className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-slate-500 text-sm">
+                      Camera loading...
+                    </div>
+                  )}
+                  <div className="absolute bottom-3 right-3 flex items-center gap-2 bg-slate-900/70 backdrop-blur-sm px-3 py-1.5 rounded-full text-xs uppercase tracking-wide text-slate-200">
+                    <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
+                    Audience
+                  </div>
+                </div>
+              </div>
+
+              <div className="md:col-span-2 bg-slate-900/50 backdrop-blur-sm border border-slate-800 rounded-2xl p-4 flex flex-col shadow-lg min-h-[180px]">
                 <h3 className="text-lg font-semibold text-indigo-400 mb-2 flex-shrink-0">Live Transcript</h3>
                 <div className="overflow-y-auto flex-grow text-slate-300">
-                  {transcriptionHistory.filter(e => e.context === 'presentation').map((e,i)=><p key={i}>{e.text}</p>)}
+                  {transcriptionHistory.filter((entry) => entry.context === 'presentation').map((entry, index) => (
+                    <p key={index}>{entry.text}</p>
+                  ))}
                   <p className="text-slate-400/80">{liveTranscript}</p>
                 </div>
               </div>
@@ -565,7 +758,10 @@ const App: React.FC = () => {
         {renderContent()}
       </main>
 
-      <canvas ref={canvasRef} className="hidden"></canvas>
+      <div className="hidden">
+        <canvas ref={speakerCanvasRef} className="hidden" />
+        <canvas ref={listenerCanvasRef} className="hidden" />
+      </div>
       
       <footer className="w-full max-w-7xl mx-auto mt-8 h-16 flex items-center justify-center">
         {status === SessionStatus.IDLE || status === SessionStatus.COMPLETE || status === SessionStatus.ERROR ? (

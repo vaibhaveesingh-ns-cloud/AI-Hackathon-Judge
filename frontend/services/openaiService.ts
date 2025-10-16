@@ -79,11 +79,23 @@ const extractOutputText = (response: OpenAIResponse): string => {
   return parts?.join('\n') ?? '';
 };
 
+const normalizeAudioMimeType = (mimeType: string | undefined): { type: string; extension: string } => {
+  if (!mimeType) return { type: 'audio/webm', extension: 'webm' };
+
+  const lower = mimeType.toLowerCase();
+  if (lower.includes('webm')) return { type: 'audio/webm', extension: 'webm' };
+  if (lower.includes('ogg')) return { type: 'audio/ogg', extension: 'ogg' };
+  if (lower.includes('mp3') || lower.includes('mpeg')) return { type: 'audio/mpeg', extension: 'mp3' };
+  if (lower.includes('wav')) return { type: 'audio/wav', extension: 'wav' };
+  if (lower.includes('m4a') || lower.includes('mp4')) return { type: 'audio/mp4', extension: 'm4a' };
+
+  return { type: 'audio/webm', extension: 'webm' };
+};
+
 export const transcribePresentationAudio = async (audioBlob: Blob): Promise<string> => {
   try {
-    const mimeType = audioBlob.type || 'audio/webm';
-    const fileName = `presentation.${mimeType.split('/')[1] ?? 'webm'}`;
-    const file = new File([audioBlob], fileName, { type: mimeType });
+    const { type, extension } = normalizeAudioMimeType(audioBlob.type);
+    const file = new File([audioBlob], `presentation.${extension}`, { type });
 
     const response = await openai.audio.transcriptions.create({
       file,

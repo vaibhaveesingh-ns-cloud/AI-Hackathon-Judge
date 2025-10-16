@@ -1,12 +1,10 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types';
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
-import { getFinalPresentationFeedback, generateQuestions } from './services/openaiService';
+import { getFinalPresentationFeedback, generateQuestions, transcribePresentationAudio } from './services/openaiService';
 import { parsePptx } from './utils/pptxParser';
-import { getGeminiApiKey } from './utils/getGeminiApiKey';
 
 const getFrameAsBase64 = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement): string | null => {
     if (videoEl.readyState >= 2) {
@@ -37,25 +35,6 @@ const getMediaErrorMessage = (err: unknown): string => {
     return msg;
 };
 
-const bufferToBase64 = (buffer: ArrayBuffer): string => {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    if (typeof window === 'undefined' || typeof window.btoa !== 'function') {
-        throw new Error('Base64 encoding is not available in this environment.');
-    }
-    return window.btoa(binary);
-};
-
-const getSpeechRecognitionConstructor = (): (new () => any) | null => {
-    if (typeof window === 'undefined') return null;
-    return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null;
-};
-
-const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
-
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
 
 const App: React.FC = () => {
@@ -79,25 +58,14 @@ const App: React.FC = () => {
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
 
   const [questions, setQuestions] = useState<string[]>([]);
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const currentQuestionIndexRef = useRef(currentQuestionIndex);
-  useEffect(() => {
-    currentQuestionIndexRef.current = currentQuestionIndex;
-  }, [currentQuestionIndex]);
 
-
-  const sessionRef = useRef<Awaited<ReturnType<typeof ai.live.connect>> | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const recognitionRef = useRef<any>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const currentTranscriptionRef = useRef<string>("");
-  
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoFramesRef = useRef<string[]>([]);
   const frameIntervalRef = useRef<number | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedAudioChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     if (status === SessionStatus.LISTENING && videoRef.current && mediaStreamRef.current) {
@@ -140,19 +108,51 @@ const App: React.FC = () => {
   }, [status, hasMediaPermissions]);
 
   const stopMediaProcessing = useCallback(() => {
-    if (scriptProcessorRef.current) scriptProcessorRef.current.onaudioprocess = null;
-    if (mediaStreamSourceRef.current) mediaStreamSourceRef.current.disconnect();
-    if (scriptProcessorRef.current) scriptProcessorRef.current.disconnect();
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') audioContextRef.current.close().catch(console.error);
     if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(track => track.stop());
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
     if (videoRef.current) videoRef.current.srcObject = null;
     
     mediaStreamRef.current = null;
-    audioContextRef.current = null;
-    scriptProcessorRef.current = null;
-    mediaStreamSourceRef.current = null;
     frameIntervalRef.current = null;
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+    }
+    mediaRecorderRef.current = null;
+  }, []);
+
+  const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      if (recordedAudioChunksRef.current.length > 0) {
+        const fallbackBlob = new Blob(recordedAudioChunksRef.current, { type: 'audio/webm' });
+        recordedAudioChunksRef.current = [];
+        return fallbackBlob;
+      }
+      return null;
+    }
+
+    if (recorder.state === 'inactive') {
+      mediaRecorderRef.current = null;
+      const existingBlob = recordedAudioChunksRef.current.length > 0
+        ? new Blob(recordedAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        : null;
+      recordedAudioChunksRef.current = [];
+      return existingBlob;
+    }
+
+    return new Promise((resolve) => {
+      recorder.onstop = () => {
+        const blob = recordedAudioChunksRef.current.length > 0
+          ? new Blob(recordedAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+          : null;
+        mediaRecorderRef.current = null;
+        recordedAudioChunksRef.current = [];
+        resolve(blob);
+      };
+      recorder.stop();
+    });
   }, []);
 
   const requestMediaStream = useCallback(async () => {
@@ -184,13 +184,13 @@ const App: React.FC = () => {
     setFeedback(null);
     setTranscriptionHistory([]);
     setLiveTranscript("");
-    currentTranscriptionRef.current = "";
     videoFramesRef.current = [];
     setCurrentSlide(0);
     setQuestions([]);
-    setCurrentQuestionIndex(0);
     setPptxFile(null);
     setSlides([]);
+    recordedAudioChunksRef.current = [];
+    mediaRecorderRef.current = null;
   }
 
   const handleStart = useCallback(async () => {
@@ -199,11 +199,9 @@ const App: React.FC = () => {
     setFeedback(null);
     setTranscriptionHistory([]);
     setLiveTranscript("");
-    currentTranscriptionRef.current = "";
     videoFramesRef.current = [];
     setCurrentSlide(0);
     setQuestions([]);
-    setCurrentQuestionIndex(0);
 
     try {
         const stream = await requestMediaStream();
@@ -218,95 +216,50 @@ const App: React.FC = () => {
             }
         }, FRAME_CAPTURE_INTERVAL);
 
-        const sessionPromise = ai.live.connect({
-            model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-            callbacks: {
-                onopen: () => {
-                    setStatus(SessionStatus.LISTENING);
-                    const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-                    audioContextRef.current = new AudioContext({ sampleRate: 16000 });
-                    
-                    mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
-                    scriptProcessorRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
-                    
-                    scriptProcessorRef.current.onaudioprocess = (audioProcessingEvent) => {
-                        const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-                        const int16 = new Int16Array(inputData.length);
-                        for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32767;
-                        const audioData = bufferToBase64(int16.buffer);
-                        sessionPromise.then((session) => session.sendRealtimeInput({
-                            media: {
-                                mimeType: 'audio/pcm;rate=16000',
-                                data: audioData,
-                            }
-                        }));
-                    };
+        if (typeof MediaRecorder === 'undefined') {
+            throw new Error('Audio recording is not supported in this browser.');
+        }
 
-                    mediaStreamSourceRef.current.connect(scriptProcessorRef.current);
-                    scriptProcessorRef.current.connect(audioContextRef.current.destination);
-                },
-                onmessage: (message: LiveServerMessage) => {
-                    if (message.serverContent?.inputTranscription) {
-                        const transcription = message.serverContent.inputTranscription;
-                        currentTranscriptionRef.current += transcription.text;
-                        setLiveTranscript(currentTranscriptionRef.current);
-                        if((transcription as any).isFinal) {
-                            const text = currentTranscriptionRef.current.trim();
-                            if (text) {
-                                setTranscriptionHistory(prev => [...prev, { speaker: 'user', text, context: 'presentation' }]);
-                            }
-                            currentTranscriptionRef.current = "";
-                            setLiveTranscript("");
-                        }
-                    }
-                },
-                onerror: (e: ErrorEvent) => {
-                    console.error('Session error:', e);
-                    setError('A network connection error occurred. Please check your internet and firewall settings.');
-                    setStatus(SessionStatus.ERROR);
-                    stopMediaProcessing();
-                },
-                onclose: (e: CloseEvent) => {
-                    if ([SessionStatus.LISTENING].includes(statusRef.current)) {
-                        setError('The connection to the judge was lost unexpectedly. Please try again.');
-                        setStatus(SessionStatus.ERROR);
-                        stopMediaProcessing();
-                    }
-                },
-            },
-            config: {
-                responseModalities: [Modality.AUDIO],
-                inputAudioTranscription: {},
-                systemInstruction: 'You are a silent presentation judge. Your role is only to transcribe the user\'s speech. Do not generate any spoken response.',
-            },
-        });
-        sessionRef.current = await sessionPromise;
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length === 0) {
+            throw new Error('No audio track detected. Please verify your microphone.');
+        }
+
+        const audioStream = new MediaStream(audioTracks);
+        recordedAudioChunksRef.current = [];
+        try {
+            const recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+            recorder.ondataavailable = (event) => {
+                if (event.data && event.data.size > 0) recordedAudioChunksRef.current.push(event.data);
+            };
+            recorder.start();
+            mediaRecorderRef.current = recorder;
+        } catch (recorderError) {
+            console.error('MediaRecorder error:', recorderError);
+            throw new Error('Could not start audio recording. Please check browser compatibility.');
+        }
+
+        setLiveTranscript('Recording in progress...');
+
+        setStatus(SessionStatus.LISTENING);
     } catch (err) {
         const msg = getMediaErrorMessage(err);
         setHasMediaPermissions(false);
         setError(msg);
         setStatus(SessionStatus.ERROR);
+        stopMediaProcessing();
     }
-  }, [stopMediaProcessing, questions, requestMediaStream]);
+  }, [requestMediaStream, stopMediaProcessing]);
 
   const handleFinishQAndA = useCallback(async (
     providedQuestions?: string[],
     historyOverride?: TranscriptionEntry[]
   ) => {
     setStatus(SessionStatus.PROCESSING);
-    if (sessionRef.current) {
-        sessionRef.current.close();
-        sessionRef.current = null;
-    }
     stopMediaProcessing();
 
-    const sourceHistory = historyOverride ?? transcriptionHistory;
-    let finalHistory = [...sourceHistory];
-    const lastAnswer = currentTranscriptionRef.current.trim();
+    const finalHistory = historyOverride ?? transcriptionHistory;
     const questionSet = providedQuestions ?? questions;
-    if (lastAnswer && questionSet.length > 0) {
-        finalHistory.push({ speaker: 'user', text: lastAnswer, context: 'q&a' });
-    }
 
     const finalFeedback = await getFinalPresentationFeedback(finalHistory, videoFramesRef.current, slides, questionSet);
     if (finalFeedback) {
@@ -316,27 +269,45 @@ const App: React.FC = () => {
       setError('Could not generate feedback. The presentation may have been too short.');
       setStatus(SessionStatus.ERROR);
     }
-  }, [transcriptionHistory, stopMediaProcessing, slides, questions, currentQuestionIndex]);
+  }, [transcriptionHistory, stopMediaProcessing, slides, questions]);
   
   const handleStopPresentation = useCallback(async () => {
-    setStatus(SessionStatus.GENERATING_QUESTIONS);
-    let currentHistory = [...transcriptionHistory];
-    if (currentTranscriptionRef.current.trim()) {
-        currentHistory.push({ speaker: 'user', text: currentTranscriptionRef.current.trim(), context: 'presentation' });
-        currentTranscriptionRef.current = "";
-        setLiveTranscript("");
-    }
-    setTranscriptionHistory(currentHistory);
+    setStatus(SessionStatus.PROCESSING);
 
-    const generatedQuestions = await generateQuestions(currentHistory, slides);
-    if (generatedQuestions.length > 0) {
-        setQuestions(generatedQuestions);
-        setCurrentQuestionIndex(0);
-        await handleFinishQAndA(generatedQuestions, currentHistory);
-    } else {
-        await handleFinishQAndA(undefined, currentHistory);
+    const audioBlob = await stopRecordingAndCollectAudio();
+    stopMediaProcessing();
+
+    if (!audioBlob) {
+      setError('No audio was captured. Please ensure your microphone is working.');
+      setStatus(SessionStatus.ERROR);
+      return;
     }
-  }, [transcriptionHistory, slides, handleFinishQAndA]);
+
+    let presentationTranscript = '';
+    try {
+      presentationTranscript = await transcribePresentationAudio(audioBlob);
+    } catch (transcriptionError) {
+      console.error('Transcription failed:', transcriptionError);
+    }
+
+    if (!presentationTranscript.trim()) {
+      setError('Could not transcribe the presentation audio. Please try again.');
+      setStatus(SessionStatus.ERROR);
+      return;
+    }
+
+    const updatedHistory: TranscriptionEntry[] = [
+      { speaker: 'user', text: presentationTranscript, context: 'presentation' }
+    ];
+    setTranscriptionHistory(updatedHistory);
+    setLiveTranscript(presentationTranscript);
+
+    setStatus(SessionStatus.GENERATING_QUESTIONS);
+    const generatedQuestions = await generateQuestions(updatedHistory, slides);
+    setQuestions(generatedQuestions);
+
+    await handleFinishQAndA(generatedQuestions, updatedHistory);
+  }, [stopRecordingAndCollectAudio, stopMediaProcessing, transcribePresentationAudio, generateQuestions, slides, handleFinishQAndA]);
   
   const processFile = async (file: File) => {
     if (file && file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation") {

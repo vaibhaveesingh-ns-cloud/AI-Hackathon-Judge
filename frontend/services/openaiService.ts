@@ -79,6 +79,24 @@ const extractOutputText = (response: OpenAIResponse): string => {
   return parts?.join('\n') ?? '';
 };
 
+export const transcribePresentationAudio = async (audioBlob: Blob): Promise<string> => {
+  try {
+    const mimeType = audioBlob.type || 'audio/webm';
+    const fileName = `presentation.${mimeType.split('/')[1] ?? 'webm'}`;
+    const file = new File([audioBlob], fileName, { type: mimeType });
+
+    const response = await openai.audio.transcriptions.create({
+      file,
+      model: 'gpt-4o-mini-transcribe',
+    });
+
+    return response.text ?? '';
+  } catch (error) {
+    console.error('Error transcribing audio:', error);
+    throw error;
+  }
+};
+
 export const generateQuestions = async (
   transcriptionHistory: TranscriptionEntry[],
   slideTexts: string[]

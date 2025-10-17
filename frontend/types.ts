@@ -13,6 +13,8 @@ export interface TranscriptionEntry {
   speaker: 'user' | 'judge';
   text: string;
   context?: 'presentation' | 'q&a'; // Context to differentiate parts of the session
+  startMs?: number;
+  endMs?: number;
 }
 
 export interface ScoreBreakdown {

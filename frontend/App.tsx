@@ -3,7 +3,7 @@ import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
-import { getFinalPresentationFeedback, generateQuestions, transcribePresentationAudio } from './services/openaiService';
+import { getFinalPresentationFeedback, generateQuestions, transcribeAudioChunk } from './services/openaiService';
 import { parsePptx } from './utils/pptxParser';
 
 const getFrameAsBase64 = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement): string | null => {
@@ -35,14 +35,8 @@ const getMediaErrorMessage = (err: unknown): string => {
     return msg;
 };
 
-type SpeechRecognitionConstructor = new () => any;
-
-const getSpeechRecognitionConstructor = (): SpeechRecognitionConstructor | null => {
-    if (typeof window === 'undefined') return null;
-    return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null;
-};
-
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
+const AUDIO_CHUNK_DURATION_MS = 5000;
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<SessionStatus>(SessionStatus.IDLE);
@@ -85,8 +79,11 @@ const App: React.FC = () => {
   const listenerFrameIntervalRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedAudioChunksRef = useRef<Blob[]>([]);
-  const speechRecognitionRef = useRef<any>(null);
-  const shouldRestartRecognitionRef = useRef<boolean>(false);
+  const recordingStartRef = useRef<number>(0);
+  const lastChunkTimestampRef = useRef<number>(0);
+  const pendingTranscriptionsRef = useRef<Set<Promise<void>>>(new Set());
+  const transcriptionHistoryRef = useRef<TranscriptionEntry[]>([]);
+  const lastTranscribedEndRef = useRef<number>(0);
 
   const formatCameraLabel = (device: MediaDeviceInfo, index: number) =>
     device.label || `Camera ${index + 1}`;
@@ -274,46 +271,75 @@ const App: React.FC = () => {
       );
     };
 
-    updateElapsed();
-    const intervalId = window.setInterval(updateElapsed, 1_000);
-    return () => clearInterval(intervalId);
-  }, [status, listeningStartTime]);
-
-  const stopSpeechRecognition = useCallback(() => {
-    shouldRestartRecognitionRef.current = false;
-    const recognition = speechRecognitionRef.current;
-    if (recognition) {
-      try {
-        recognition.onresult = null;
-        recognition.onerror = null;
-        recognition.onend = null;
-        recognition.stop();
-      } catch (stopError) {
-        console.debug('Speech recognition stop error:', stopError);
-      }
     }
-    speechRecognitionRef.current = null;
-    setLiveTranscript('');
-  }, []);
+  });
+}, []);
 
-  const stopMediaProcessing = useCallback(() => {
-    stopStream(speakerStreamRef, speakerFrameIntervalRef, speakerVideoRef);
-    stopStream(listenerStreamRef, listenerFrameIntervalRef, listenerVideoRef);
+useEffect(() => {
+  if (status === SessionStatus.IDLE && hasMediaPermissions) {
+    setPermissionInfo('Camera and microphone access granted. You can start the evaluation anytime.');
+  }
+}, [status, hasMediaPermissions]);
 
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.stop();
-    }
-    mediaRecorderRef.current = null;
-    stopSpeechRecognition();
-    setListeningStartTime(null);
+useEffect(() => {
+  if (status !== SessionStatus.LISTENING || listeningStartTime === null) {
     setElapsedTime('00:00:00');
-  }, [stopStream, stopSpeechRecognition]);
+    return;
+  }
 
-  const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder) {
-      if (recordedAudioChunksRef.current.length > 0) {
+  const updateElapsed = () => {
+    const diff = Math.max(0, Date.now() - listeningStartTime);
+    const hours = Math.floor(diff / 3_600_000);
+    const minutes = Math.floor((diff % 3_600_000) / 60_000);
+    const seconds = Math.floor((diff % 60_000) / 1_000);
+    setElapsedTime(
+      `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    );
+  };
+
+  updateElapsed();
+  const intervalId = window.setInterval(updateElapsed, 1_000);
+  return () => clearInterval(intervalId);
+}, [status, listeningStartTime]);
+
+const stopMediaProcessing = useCallback(() => {
+  stopStream(speakerStreamRef, speakerFrameIntervalRef, speakerVideoRef);
+  stopStream(listenerStreamRef, listenerFrameIntervalRef, listenerVideoRef);
+
+  const recorder = mediaRecorderRef.current;
+  if (recorder && recorder.state !== 'inactive') {
+    recorder.stop();
+  }
+  mediaRecorderRef.current = null;
+  setListeningStartTime(null);
+  setElapsedTime('00:00:00');
+  recordingStartRef.current = 0;
+  lastChunkTimestampRef.current = 0;
+}, [stopStream]);
+
+const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
+  const recorder = mediaRecorderRef.current;
+  if (!recorder) {
+    if (recordedAudioChunksRef.current.length > 0) {
+      const fallbackBlob = new Blob(recordedAudioChunksRef.current, { type: 'audio/webm' });
+      recordedAudioChunksRef.current = [];
+      return fallbackBlob;
+    }
+    return null;
+  }
+
+  if (recorder.state === 'inactive') {
+    mediaRecorderRef.current = null;
+    const existingBlob = recordedAudioChunksRef.current.length > 0
+      ? new Blob(recordedAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+      : null;
+    recordedAudioChunksRef.current = [];
+    return existingBlob;
+  }
+
+  return new Promise((resolve) => {
+    recorder.onstop = () => {
+      const blob = recordedAudioChunksRef.current.length > 0
         const fallbackBlob = new Blob(recordedAudioChunksRef.current, { type: 'audio/webm' });
         recordedAudioChunksRef.current = [];
         return fallbackBlob;

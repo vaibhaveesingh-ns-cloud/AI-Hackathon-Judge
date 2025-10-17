@@ -192,8 +192,12 @@ export const getFinalPresentationFeedback = async (
   const MIN_PRESENTER_FRAMES = 1;
   const MIN_AUDIENCE_FRAMES = 1;
 
+  if (transcriptWordCount === 0) {
+    throw new Error('No speech captured. Please allow microphone access and ensure audio is being recorded.');
+  }
+
   if (transcriptWordCount < MIN_TRANSCRIPT_WORDS) {
-    throw new Error('Insufficient speech captured. Record at least 30 words before requesting feedback.');
+    console.warn(`Transcript is shorter than recommended (${transcriptWordCount} words). Feedback quality may be limited.`);
   }
 
   if (presenterEvidenceFrames.length < MIN_PRESENTER_FRAMES) {

@@ -425,6 +425,22 @@ const App: React.FC = () => {
 
       recognition.onerror = (event: any) => {
         console.error('Speech recognition error:', event);
+
+        if (event?.error === 'no-speech') {
+          if (shouldRestartRecognitionRef.current && recognition) {
+            try {
+              recognition.stop();
+            } catch (stopError) {
+              console.error('Speech recognition stop failed:', stopError);
+            }
+          }
+          return;
+        }
+
+        if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
+          shouldRestartRecognitionRef.current = false;
+          setPermissionInfo('Microphone access was denied for live transcription. You can still continue, but live captions will be unavailable.');
+        }
       };
 
       recognition.onend = () => {

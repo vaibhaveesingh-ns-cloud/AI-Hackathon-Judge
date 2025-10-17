@@ -37,6 +37,7 @@ const getMediaErrorMessage = (err: unknown): string => {
 
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
 const AUDIO_CHUNK_DURATION_MS = 5000;
+const HUNK_DURATION_MS = 5000;
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<SessionStatus>(SessionStatus.IDLE);
@@ -46,7 +47,7 @@ const App: React.FC = () => {
   }, [status]);
 
   const [transcriptionHistory, setTranscriptionHistory] = useState<TranscriptionEntry[]>([]);
-  const [liveTranscript, setLiveTranscript] = useState<string>("");
+  const [liveTranscript, setLiveTranscript] = useState<string>('');
   const [feedback, setFeedback] = useState<PresentationFeedback | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasMediaPermissions, setHasMediaPermissions] = useState(false);
@@ -78,12 +79,21 @@ const App: React.FC = () => {
   const speakerFrameIntervalRef = useRef<number | null>(null);
   const listenerFrameIntervalRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedAudioChunksRef = useRef<Blob[]>([]);
+  const transcriptionHistoryRef = useRef<TranscriptionEntry[]>([]);
+  const pendingTranscriptionsRef = useRef<Set<Promise<void>>>(new Set());
   const recordingStartRef = useRef<number>(0);
   const lastChunkTimestampRef = useRef<number>(0);
-  const pendingTranscriptionsRef = useRef<Set<Promise<void>>>(new Set());
-  const transcriptionHistoryRef = useRef<TranscriptionEntry[]>([]);
-  const lastTranscribedEndRef = useRef<number>(0);
+
+  useEffect(() => {
+    transcriptionHistoryRef.current = transcriptionHistory;
+  }, [transcriptionHistory]);
+
+  const flushPendingTranscriptions = useCallback(async () => {
+    while (pendingTranscriptionsRef.current.size > 0) {
+      const pending = Array.from(pendingTranscriptionsRef.current);
+      await Promise.allSettled(pending);
+    }
+  }, []);
 
   const formatCameraLabel = (device: MediaDeviceInfo, index: number) =>
     device.label || `Camera ${index + 1}`;
@@ -271,99 +281,41 @@ const App: React.FC = () => {
       );
     };
 
+    updateElapsed();
+    const intervalId = window.setInterval(updateElapsed, 1_000);
+    return () => clearInterval(intervalId);
+  }, [status, listeningStartTime]);
+
+  const stopMediaProcessing = useCallback(() => {
+    stopStream(speakerStreamRef, speakerFrameIntervalRef, speakerVideoRef);
+    stopStream(listenerStreamRef, listenerFrameIntervalRef, listenerVideoRef);
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
     }
-  });
-}, []);
-
-useEffect(() => {
-  if (status === SessionStatus.IDLE && hasMediaPermissions) {
-    setPermissionInfo('Camera and microphone access granted. You can start the evaluation anytime.');
-  }
-}, [status, hasMediaPermissions]);
-
-useEffect(() => {
-  if (status !== SessionStatus.LISTENING || listeningStartTime === null) {
-    setElapsedTime('00:00:00');
-    return;
-  }
-
-  const updateElapsed = () => {
-    const diff = Math.max(0, Date.now() - listeningStartTime);
-    const hours = Math.floor(diff / 3_600_000);
-    const minutes = Math.floor((diff % 3_600_000) / 60_000);
-    const seconds = Math.floor((diff % 60_000) / 1_000);
-    setElapsedTime(
-      `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-    );
-  };
-
-  updateElapsed();
-  const intervalId = window.setInterval(updateElapsed, 1_000);
-  return () => clearInterval(intervalId);
-}, [status, listeningStartTime]);
-
-const stopMediaProcessing = useCallback(() => {
-  stopStream(speakerStreamRef, speakerFrameIntervalRef, speakerVideoRef);
-  stopStream(listenerStreamRef, listenerFrameIntervalRef, listenerVideoRef);
-
-  const recorder = mediaRecorderRef.current;
-  if (recorder && recorder.state !== 'inactive') {
-    recorder.stop();
-  }
-  mediaRecorderRef.current = null;
-  setListeningStartTime(null);
-  setElapsedTime('00:00:00');
-  recordingStartRef.current = 0;
-  lastChunkTimestampRef.current = 0;
-}, [stopStream]);
-
-const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
-  const recorder = mediaRecorderRef.current;
-  if (!recorder) {
-    if (recordedAudioChunksRef.current.length > 0) {
-      const fallbackBlob = new Blob(recordedAudioChunksRef.current, { type: 'audio/webm' });
-      recordedAudioChunksRef.current = [];
-      return fallbackBlob;
-    }
-    return null;
-  }
-
-  if (recorder.state === 'inactive') {
     mediaRecorderRef.current = null;
-    const existingBlob = recordedAudioChunksRef.current.length > 0
-      ? new Blob(recordedAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-      : null;
-    recordedAudioChunksRef.current = [];
-    return existingBlob;
-  }
+    setListeningStartTime(null);
+    setElapsedTime('00:00:00');
+    recordingStartRef.current = 0;
+    lastChunkTimestampRef.current = 0;
+  }, [stopStream]);
 
-  return new Promise((resolve) => {
-    recorder.onstop = () => {
-      const blob = recordedAudioChunksRef.current.length > 0
-        const fallbackBlob = new Blob(recordedAudioChunksRef.current, { type: 'audio/webm' });
-        recordedAudioChunksRef.current = [];
-        return fallbackBlob;
-      }
+  const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
       return null;
     }
 
     if (recorder.state === 'inactive') {
       mediaRecorderRef.current = null;
-      const existingBlob = recordedAudioChunksRef.current.length > 0
-        ? new Blob(recordedAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-        : null;
-      recordedAudioChunksRef.current = [];
-      return existingBlob;
+      return null;
     }
 
     return new Promise((resolve) => {
       recorder.onstop = () => {
-        const blob = recordedAudioChunksRef.current.length > 0
-          ? new Blob(recordedAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
-          : null;
         mediaRecorderRef.current = null;
-        recordedAudioChunksRef.current = [];
-        resolve(blob);
+        resolve(null);
       };
       recorder.stop();
     });
@@ -398,102 +350,25 @@ const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> 
     setError(null);
     setFeedback(null);
     setTranscriptionHistory([]);
-    setLiveTranscript("");
+    setLiveTranscript('');
     speakerVideoFramesRef.current = [];
     listenerVideoFramesRef.current = [];
     setCurrentSlide(0);
     setQuestions([]);
     setPptxFile(null);
     setSlides([]);
-    recordedAudioChunksRef.current = [];
     setListeningStartTime(null);
     setElapsedTime('00:00:00');
+    recordingStartRef.current = 0;
+    lastChunkTimestampRef.current = 0;
   }
-
-  const startSpeechRecognition = useCallback(() => {
-    const SpeechRecognitionCtor = getSpeechRecognitionConstructor();
-    if (!SpeechRecognitionCtor) {
-      setPermissionInfo((prev) => prev ?? 'Live transcription is not supported in this browser. Recording will still be analyzed.');
-      return;
-    }
-
-    try {
-      const recognition = new SpeechRecognitionCtor();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-
-      speechRecognitionRef.current = recognition;
-      shouldRestartRecognitionRef.current = true;
-
-      recognition.onresult = (event: any) => {
-        let interimAggregate = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
-          const transcript: string = result[0]?.transcript?.trim() ?? '';
-          if (!transcript) continue;
-
-          if (result.isFinal) {
-            setTranscriptionHistory((prev) => [
-              ...prev,
-              { speaker: 'user', text: transcript, context: 'presentation' },
-            ]);
-            setLiveTranscript('');
-          } else {
-            interimAggregate = `${interimAggregate} ${transcript}`.trim();
-          }
-        }
-
-        if (interimAggregate) {
-          setLiveTranscript(interimAggregate);
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.error('Speech recognition error:', event);
-
-        if (event?.error === 'no-speech') {
-          if (shouldRestartRecognitionRef.current && recognition) {
-            try {
-              recognition.stop();
-            } catch (stopError) {
-              console.error('Speech recognition stop failed:', stopError);
-            }
-          }
-          return;
-        }
-
-        if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
-          shouldRestartRecognitionRef.current = false;
-          setPermissionInfo('Microphone access was denied for live transcription. You can still continue, but live captions will be unavailable.');
-        }
-      };
-
-      recognition.onend = () => {
-        if (shouldRestartRecognitionRef.current && recognition) {
-          try {
-            recognition.start();
-          } catch (restartError) {
-            console.error('Speech recognition restart failed:', restartError);
-          }
-        }
-      };
-
-      recognition.start();
-    } catch (recognitionError) {
-      console.error('Speech recognition initialization failed:', recognitionError);
-      setPermissionInfo((prev) => prev ?? 'Live transcription could not be started. Recording will still be analyzed.');
-      speechRecognitionRef.current = null;
-      shouldRestartRecognitionRef.current = false;
-    }
-  }, [setTranscriptionHistory, setLiveTranscript, setPermissionInfo]);
 
   const handleStart = useCallback(async () => {
     setStatus(SessionStatus.CONNECTING);
     setError(null);
     setFeedback(null);
     setTranscriptionHistory([]);
-    setLiveTranscript("");
+    setLiveTranscript('');
     speakerVideoFramesRef.current = [];
     listenerVideoFramesRef.current = [];
     setCurrentSlide(0);
@@ -551,13 +426,53 @@ const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> 
         }
 
         const audioStream = new MediaStream(audioTracks);
-        recordedAudioChunksRef.current = [];
         try {
             const recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+            recordingStartRef.current = Date.now();
+            lastChunkTimestampRef.current = recordingStartRef.current;
             recorder.ondataavailable = (event) => {
-                if (event.data && event.data.size > 0) recordedAudioChunksRef.current.push(event.data);
+                if (!event.data || event.data.size === 0) return;
+                const chunkStart = lastChunkTimestampRef.current;
+                const chunkEnd = Date.now();
+                const durationMs = chunkEnd - chunkStart;
+                lastChunkTimestampRef.current = chunkEnd;
+
+                const transcriptionPromise = transcribeAudioChunk(
+                    event.data,
+                    chunkStart - recordingStartRef.current,
+                    durationMs
+                )
+                    .then(({ text, segments }) => {
+                        if (text) {
+                            setLiveTranscript((prev) => `${prev}\n${text}`.trim());
+                        }
+
+                        if (segments.length > 0) {
+                            setTranscriptionHistory((prev) => {
+                                const updated = [...prev];
+                                segments.forEach((segment) => {
+                                    updated.push({
+                                        speaker: 'user',
+                                        text: segment.text,
+                                        context: 'presentation',
+                                        startMs: segment.startMs,
+                                        endMs: segment.endMs,
+                                    });
+                                });
+                                return updated;
+                            });
+                        }
+                    })
+                    .catch((err) => {
+                        console.error('Chunk transcription failed:', err);
+                    });
+
+                pendingTranscriptionsRef.current.add(transcriptionPromise);
+                transcriptionPromise.finally(() => {
+                    pendingTranscriptionsRef.current.delete(transcriptionPromise);
+                });
             };
-            recorder.start();
+            recorder.start(AUDIO_CHUNK_DURATION_MS);
             mediaRecorderRef.current = recorder;
         } catch (recorderError) {
             console.error('MediaRecorder error:', recorderError);
@@ -565,8 +480,6 @@ const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> 
         }
 
         setLiveTranscript('Recording in progress...');
-
-        startSpeechRecognition();
 
         setListeningStartTime(Date.now());
         setElapsedTime('00:00:00');
@@ -578,7 +491,7 @@ const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> 
         setStatus(SessionStatus.ERROR);
         stopMediaProcessing();
     }
-  }, [requestMediaStream, stopMediaProcessing, startSpeechRecognition, attachStreamToVideo, startFrameCapture, selectedSpeakerCamera, selectedListenerCamera]);
+  }, [requestMediaStream, stopMediaProcessing, attachStreamToVideo, startFrameCapture, selectedSpeakerCamera, selectedListenerCamera]);
 
   const handleFinishQAndA = useCallback(async (
     providedQuestions?: string[],
@@ -586,6 +499,7 @@ const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> 
   ) => {
     setStatus(SessionStatus.PROCESSING);
     stopMediaProcessing();
+    await flushPendingTranscriptions();
 
     const finalHistory = historyOverride ?? transcriptionHistory;
     const questionSet = providedQuestions ?? questions;
@@ -608,41 +522,26 @@ const stopRecordingAndCollectAudio = useCallback(async (): Promise<Blob | null> 
   
   const handleStopPresentation = useCallback(async () => {
     setStatus(SessionStatus.PROCESSING);
-
-    const audioBlob = await stopRecordingAndCollectAudio();
     stopMediaProcessing();
+    await flushPendingTranscriptions();
 
-    if (!audioBlob) {
-      setError('No audio was captured. Please ensure your microphone is working.');
+    const cleanedHistory = transcriptionHistoryRef.current.filter((entry) => entry.context === 'presentation');
+
+    if (cleanedHistory.length === 0) {
+      setError('No transcript was captured. Please ensure your microphone is working.');
       setStatus(SessionStatus.ERROR);
       return;
     }
 
-    let presentationTranscript = '';
-    try {
-      presentationTranscript = await transcribePresentationAudio(audioBlob);
-    } catch (transcriptionError) {
-      console.error('Transcription failed:', transcriptionError);
-    }
-
-    if (!presentationTranscript.trim()) {
-      setError('Could not transcribe the presentation audio. Please try again.');
-      setStatus(SessionStatus.ERROR);
-      return;
-    }
-
-    const updatedHistory: TranscriptionEntry[] = [
-      { speaker: 'user', text: presentationTranscript, context: 'presentation' },
-    ];
-    setTranscriptionHistory(updatedHistory);
-    setLiveTranscript(presentationTranscript);
+    setTranscriptionHistory(cleanedHistory);
+    setLiveTranscript(cleanedHistory.map((entry) => entry.text).join('\n'));
 
     setStatus(SessionStatus.GENERATING_QUESTIONS);
-    const generatedQuestions = await generateQuestions(updatedHistory, slides);
+    const generatedQuestions = await generateQuestions(cleanedHistory, slides);
     setQuestions(generatedQuestions);
 
-    await handleFinishQAndA(generatedQuestions, updatedHistory);
-  }, [stopRecordingAndCollectAudio, stopMediaProcessing, transcribePresentationAudio, generateQuestions, slides, handleFinishQAndA]);
+    await handleFinishQAndA(generatedQuestions, cleanedHistory);
+  }, [stopMediaProcessing, flushPendingTranscriptions, generateQuestions, slides, handleFinishQAndA]);
   
   const processFile = async (file: File) => {
     if (file && file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation") {

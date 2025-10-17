@@ -107,21 +107,68 @@ const normalizeAudioMimeType = (mimeType: string | undefined): { type: string; e
   return { type: 'audio/webm', extension: 'webm' };
 };
 
-export const transcribePresentationAudio = async (audioBlob: Blob): Promise<string> => {
-  try {
-    const { type, extension } = normalizeAudioMimeType(audioBlob.type);
-    const file = new File([audioBlob], `presentation.${extension}`, { type });
+const cleanSegments = (segments: any[]): TranscriptionSegment[] =>
+  segments
+    .map((segment) => ({
+      startMs: typeof segment?.startMs === 'number' ? segment.startMs : Number(segment?.start) * 1000 || 0,
+      endMs: typeof segment?.endMs === 'number' ? segment.endMs : Number(segment?.end) * 1000 || 0,
+      text: typeof segment?.text === 'string' ? segment.text.trim() : '',
+    }))
+    .filter((segment) => segment.text.length > 0);
 
-    const response = await openai.audio.transcriptions.create({
-      file,
-      model: 'gpt-4o-mini-transcribe',
-    });
+const resolveBackendUrl = (path: string): string => {
+  const base =
+    import.meta.env.VITE_API_BASE_URL ||
+    import.meta.env.VITE_BACKEND_URL ||
+    import.meta.env.VITE_API_URL ||
+    '';
 
-    return response.text ?? '';
-  } catch (error) {
-    console.error('Error transcribing audio:', error);
-    throw error;
+  if (!base) return path;
+  if (base.endsWith('/') && path.startsWith('/')) return `${base.slice(0, -1)}${path}`;
+  if (!base.endsWith('/') && !path.startsWith('/')) return `${base}/${path}`;
+  return `${base}${path}`;
+};
+
+export interface TranscriptionSegment {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
+export interface TranscriptionResponse {
+  text: string;
+  segments: TranscriptionSegment[];
+}
+
+export const transcribeAudioChunk = async (
+  audioBlob: Blob,
+  startMs = 0,
+  durationMs = 0
+): Promise<TranscriptionResponse> => {
+  const { extension } = normalizeAudioMimeType(audioBlob.type);
+  const formData = new FormData();
+  formData.append('audio', audioBlob, `chunk.${extension}`);
+  formData.append('start_ms', String(startMs));
+  formData.append('duration_ms', String(durationMs));
+
+  const response = await fetch(resolveBackendUrl('/transcribe'), {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Transcription request failed (${response.status}): ${detail}`);
   }
+
+  const data: any = await response.json();
+  const text = typeof data?.text === 'string' ? data.text.trim() : '';
+  const segmentsArray = Array.isArray(data?.segments) ? data.segments : [];
+
+  return {
+    text,
+    segments: cleanSegments(segmentsArray),
+  };
 };
 
 export const generateQuestions = async (

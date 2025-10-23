@@ -1,19 +1,60 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 import asyncio
+import json
 import os
+from datetime import datetime
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import OpenAI
+
+from .analysis_service import run_analysis_and_store
 
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+SESSION_DATA_DIR = Path(os.getenv("SESSION_DATA_DIR", "data/sessions"))
+
+
+def _ensure_session_directory(session_id: str) -> Path:
+    session_dir = SESSION_DATA_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir
+
+
+async def _persist_upload(upload: UploadFile, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    chunk_size = 1024 * 1024
+    with destination.open("wb") as buffer:
+        while True:
+            chunk = await upload.read(chunk_size)
+            if not chunk:
+                break
+            buffer.write(chunk)
+
+
+def _write_metadata(session_dir: Path, role: str, start_ms: int, duration_ms: int, filename: str) -> None:
+    metadata_path = session_dir / "metadata.json"
+    payload = {}
+    if metadata_path.exists():
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+    payload.setdefault("videos", {})[role] = {
+        "filename": filename,
+        "startMs": start_ms,
+        "durationMs": duration_ms,
+        "uploadedAt": datetime.utcnow().isoformat() + "Z",
+    }
+    metadata_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 @asynccontextmanager
@@ -99,6 +140,59 @@ def create_app() -> FastAPI:
             )
 
         return JSONResponse({"text": combined_text, "segments": segments})
+
+    @app.post("/sessions/{session_id}/videos", tags=["sessions"])
+    async def upload_session_video(
+        session_id: str,
+        background_tasks: BackgroundTasks,
+        video: UploadFile = File(...),
+        role: str = Form(...),
+        start_ms: int = Form(0),
+        duration_ms: int = Form(0),
+    ) -> JSONResponse:
+        valid_roles = {"presenter", "audience"}
+        if role not in valid_roles:
+            raise HTTPException(status_code=400, detail="role must be 'presenter' or 'audience'")
+
+        if not video.content_type or "video" not in video.content_type:
+            raise HTTPException(status_code=400, detail="Uploaded file must be a video clip.")
+
+        session_dir = _ensure_session_directory(session_id)
+
+        suffix = Path(video.filename or f"{role}.webm").suffix or ".webm"
+        target_path = session_dir / f"{role}{suffix}"
+
+        await _persist_upload(video, target_path)
+        _write_metadata(session_dir, role, start_ms, duration_ms, target_path.name)
+
+        analysis_path = session_dir / "analysis.json"
+        if analysis_path.exists():
+            analysis_path.unlink(missing_ok=True)
+
+        queue_analysis = role == "presenter"
+        if queue_analysis:
+            background_tasks.add_task(run_analysis_and_store, session_id, session_dir)
+
+        return JSONResponse(
+            {
+                "status": "stored",
+                "analysisQueued": queue_analysis,
+            }
+        )
+
+    @app.get("/sessions/{session_id}/analysis", tags=["sessions"])
+    async def get_session_analysis(session_id: str) -> JSONResponse:
+        session_dir = SESSION_DATA_DIR / session_id
+        analysis_path = session_dir / "analysis.json"
+        if not analysis_path.exists():
+            raise HTTPException(status_code=404, detail="Analysis not available yet.")
+
+        try:
+            payload = json.loads(analysis_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=500, detail="Stored analysis is corrupted.") from exc
+
+        return JSONResponse(payload)
 
     return app
 

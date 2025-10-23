@@ -116,7 +116,7 @@ const cleanSegments = (segments: any[]): TranscriptionSegment[] =>
     }))
     .filter((segment) => segment.text.length > 0);
 
-const resolveBackendUrl = (path: string): string => {
+export const resolveBackendUrl = (path: string): string => {
   const base =
     import.meta.env.VITE_API_BASE_URL ||
     import.meta.env.VITE_BACKEND_URL ||

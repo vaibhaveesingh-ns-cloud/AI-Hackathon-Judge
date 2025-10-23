@@ -45,3 +45,37 @@ export interface PresentationFeedback {
   areasForImprovement: string[];
   questionsAsked: string[];
 }
+
+export interface VideoTimelineEntry {
+  timestamp: number;
+  emotion: string;
+  engagement: string;
+  smileScore: number;
+  eyeOpenness: number;
+  faceCount: number;
+}
+
+export interface VoiceMetrics {
+  voiceEnergy: number;
+  voiceArousal: number;
+  raw: Record<string, number>;
+}
+
+export interface VideoAnalysisSummary {
+  generatedAt: string;
+  presenterDominantEmotion: string;
+  audienceDominantEmotion: string;
+  averagePresenterSmile: number;
+  voiceEnergyLevel: string;
+  voiceMetrics: VoiceMetrics;
+  keyObservations: string[];
+  engagementOverall: string;
+}
+
+export interface SessionEngagementAnalysis {
+  sessionId: string;
+  summary: VideoAnalysisSummary;
+  presenterTimeline: VideoTimelineEntry[];
+  audienceTimeline: VideoTimelineEntry[];
+  voiceTimeline: number[];
+}

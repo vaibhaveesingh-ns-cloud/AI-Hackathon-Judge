@@ -116,8 +116,9 @@ def create_app() -> FastAPI:
             # Fallback to webm to keep compatibility with the MediaRecorder default
             content_type = "audio/webm"
 
-        processed_file_handle: io.BufferedReader | io.BytesIO
-        cleanup_path: Path | None = None
+        processed_bytes: bytes
+        processed_filename: str
+        processed_content_type: str
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix or ".webm") as src_file:
             src_file.write(audio_bytes)
@@ -130,36 +131,41 @@ def create_app() -> FastAPI:
             (
                 ffmpeg
                 .input(str(src_path))
-                .output(str(dst_path), format="wav", acodec="pcm_s16le", ac=1, ar=16000)
+                .output(
+                    str(dst_path),
+                    format="wav",
+                    acodec="pcm_s16le",
+                    ac=1,
+                    ar=16000,
+                )
                 .overwrite_output()
                 .run(quiet=True)
             )
-            processed_file_handle = dst_path.open("rb")
-            cleanup_path = dst_path
+            processed_bytes = dst_path.read_bytes()
+            processed_filename = Path(filename).with_suffix(".wav").name
+            processed_content_type = "audio/wav"
         except Exception as conversion_error:  # pragma: no cover - diagnostic logging only
             print(f"[transcribe] audio conversion failed: {conversion_error}")
-            processed_file_handle = io.BytesIO(audio_bytes)
-            processed_file_handle.seek(0)
+            processed_bytes = audio_bytes
+            processed_filename = filename
+            processed_content_type = content_type
         finally:
             src_path.unlink(missing_ok=True)
+            dst_path.unlink(missing_ok=True)
 
         def run_transcription() -> object:
+            buf = io.BytesIO(processed_bytes)
             try:
+                buf.seek(0)
                 return openai_client.audio.transcriptions.create(
                     model="gpt-4o-mini-transcribe",
-                    file=processed_file_handle,
+                    file=(processed_filename, buf, processed_content_type),
                     response_format="json",
                 )
             finally:
-                if cleanup_path is not None:
-                    processed_file_handle.close()
-                    cleanup_path.unlink(missing_ok=True)
+                buf.close()
 
-        try:
-            transcription = await asyncio.to_thread(run_transcription)
-        finally:
-            if isinstance(processed_file_handle, io.BytesIO):
-                processed_file_handle.close()
+        transcription = await asyncio.to_thread(run_transcription)
 
         combined_text = (getattr(transcription, "text", "") or "").strip()
         raw_segments = getattr(transcription, "segments", None) or []

@@ -33,19 +33,6 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_AUDIO_EXTENSIONS = {
-    ".flac",
-    ".m4a",
-    ".mp3",
-    ".mp4",
-    ".mpeg",
-    ".mpga",
-    ".oga",
-    ".ogg",
-    ".wav",
-    ".webm",
-}
-
 SESSION_DATA_DIR = Path(os.getenv("SESSION_DATA_DIR", "data/sessions"))
 
 
@@ -130,6 +117,10 @@ def create_app() -> FastAPI:
         original_suffix = Path(original_name).suffix.lower()
         if original_suffix not in SUPPORTED_AUDIO_EXTENSIONS:
             original_suffix = ".webm"
+        filename = Path(audio.filename).name if audio.filename else "chunk.webm"
+
+        processed_bytes: bytes
+        processed_filename: str
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=original_suffix) as src_file:
             src_file.write(audio_bytes)
@@ -155,20 +146,30 @@ def create_app() -> FastAPI:
                 .overwrite_output()
                 .run(quiet=True)
             )
-            processed_path = dst_path
+            processed_bytes = dst_path.read_bytes()
+            processed_filename = Path(filename).with_suffix(".wav").name
         except Exception as conversion_error:  # pragma: no cover - diagnostic logging only
-            logger.warning("Audio conversion to WAV failed", exc_info=conversion_error)
+            print(f"[transcribe] audio conversion failed: {conversion_error}")
+            processed_bytes = audio_bytes
+            processed_filename = filename
+        finally:
+            src_path.unlink(missing_ok=True)
+            dst_path.unlink(missing_ok=True)
 
         def run_transcription() -> object:
-            with processed_path.open("rb") as buf:
+            buf = io.BytesIO(processed_bytes)
+            setattr(buf, "name", processed_filename)
+            try:
+                buf.seek(0)
                 return openai_client.audio.transcriptions.create(
                     model=TRANSCRIPTION_MODEL,
                     file=buf,
                     response_format="verbose_json",
                     temperature=0,
                 )
+            finally:
+                buf.close()
 
-        transcription = None
         try:
             transcription = await asyncio.to_thread(run_transcription)
         except BadRequestError as exc:
@@ -204,6 +205,7 @@ def create_app() -> FastAPI:
             ) from exc
         except Exception as exc:  # pragma: no cover - surface upstream errors
             logger.exception("Unexpected transcription failure")
+            logger.exception("Transcription request failed")
             raise HTTPException(
                 status_code=502,
                 detail="Transcription failed while contacting the speech-to-text service.",

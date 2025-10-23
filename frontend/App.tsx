@@ -44,6 +44,7 @@ const getMediaErrorMessage = (err: unknown): string => {
 
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
 const AUDIO_CHUNK_DURATION_MS = 5000;
+const MIN_AUDIO_CHUNK_BYTES = 2_048;
 const HUNK_DURATION_MS = 5000;
 
 const App: React.FC = () => {
@@ -458,18 +459,34 @@ const App: React.FC = () => {
 
         const audioStream = new MediaStream(audioTracks);
         try {
-            const recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+            const recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm;codecs=opus' });
             recordingStartRef.current = Date.now();
             lastChunkTimestampRef.current = recordingStartRef.current;
             recorder.ondataavailable = (event) => {
-                if (!event.data || event.data.size === 0) return;
+                if (!event.data) {
+                    console.warn('[mediaRecorder] dataavailable received without blob');
+                    return;
+                }
+
+                const { size, type } = event.data;
+                if (size < MIN_AUDIO_CHUNK_BYTES) {
+                    console.warn('[mediaRecorder] skipping tiny audio chunk', { size, type });
+                    return;
+                }
+
+                console.debug('[mediaRecorder] processing audio chunk', { size, type });
+
+                const chunkBlob = event.data.type
+                    ? event.data
+                    : new Blob([event.data], { type: 'audio/webm;codecs=opus' });
+
                 const chunkStart = lastChunkTimestampRef.current;
                 const chunkEnd = Date.now();
                 const durationMs = chunkEnd - chunkStart;
                 lastChunkTimestampRef.current = chunkEnd;
 
                 const transcriptionPromise = transcribeAudioChunk(
-                    event.data,
+                    chunkBlob,
                     chunkStart - recordingStartRef.current,
                     durationMs
                 )
@@ -598,13 +615,27 @@ const App: React.FC = () => {
     stopMediaProcessing();
     await flushPendingTranscriptions();
 
-    const cleanedHistory = transcriptionHistoryRef.current.filter((entry) => entry.context === 'presentation');
+    let workingHistory = transcriptionHistoryRef.current.filter((entry) => entry.context === 'presentation');
 
-    if (cleanedHistory.length === 0) {
-      setError('No transcript was captured. Please ensure your microphone is working.');
-      setStatus(SessionStatus.ERROR);
-      return;
+    if (workingHistory.length === 0) {
+      const slideFallback = slides.join('\n\n').trim();
+      if (slideFallback) {
+        workingHistory = [
+          {
+            speaker: 'user' as const,
+            text: slideFallback,
+            context: 'presentation' as const,
+          },
+        ];
+        setLiveTranscript('Live transcript unavailable. Using slide content as fallback for analysis.');
+      } else {
+        setLiveTranscript('Live transcript unavailable. Proceeding with video-only analysis.');
+      }
+    } else {
+      setLiveTranscript(workingHistory.map((entry) => entry.text).join('\n'));
     }
+
+    setTranscriptionHistory(workingHistory);
 
     try {
       await uploadVideoIfAvailable('presenter', presenterChunksRef.current, 0, durationMs);
@@ -626,14 +657,11 @@ const App: React.FC = () => {
       setError(uploadError instanceof Error ? uploadError.message : 'Unable to upload session videos.');
     }
 
-    setTranscriptionHistory(cleanedHistory);
-    setLiveTranscript(cleanedHistory.map((entry) => entry.text).join('\n'));
-
     setStatus(SessionStatus.GENERATING_QUESTIONS);
-    const generatedQuestions = await generateQuestions(cleanedHistory, slides);
+    const generatedQuestions = await generateQuestions(workingHistory, slides);
     setQuestions(generatedQuestions);
 
-    await handleFinishQAndA(generatedQuestions, cleanedHistory);
+    await handleFinishQAndA(generatedQuestions, workingHistory);
   }, [stopMediaProcessing, flushPendingTranscriptions, generateQuestions, slides, handleFinishQAndA, uploadVideoIfAvailable, sessionId]);
   
   const processFile = async (file: File) => {

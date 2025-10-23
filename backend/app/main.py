@@ -100,12 +100,12 @@ def create_app() -> FastAPI:
         filename = audio.filename or "chunk.webm"
         content_type = audio.content_type or "audio/webm"
 
-        async def run_transcription() -> object:
+        def run_transcription() -> object:
             return openai_client.audio.transcriptions.create(
                 model="gpt-4o-mini-transcribe",
                 file=(filename, audio_bytes, content_type),
                 language="en",
-                response_format="verbose_json",
+                response_format="json",
                 timestamp_granularities=["segment"],
             )
 

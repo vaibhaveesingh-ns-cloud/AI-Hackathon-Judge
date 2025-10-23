@@ -5,6 +5,7 @@ from typing import AsyncIterator
 import asyncio
 import io
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime
@@ -13,7 +14,14 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    BadRequestError,
+    OpenAI,
+    RateLimitError,
+)
 import ffmpeg
 
 from .analysis_service import run_analysis_and_store
@@ -21,7 +29,10 @@ from .analysis_service import run_analysis_and_store
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip()
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+logger = logging.getLogger(__name__)
 
 SESSION_DATA_DIR = Path(os.getenv("SESSION_DATA_DIR", "data/sessions"))
 
@@ -93,6 +104,9 @@ def create_app() -> FastAPI:
         if openai_client is None:
             raise HTTPException(status_code=500, detail="OpenAI API key is not configured on the server.")
 
+        if not TRANSCRIPTION_MODEL:
+            raise HTTPException(status_code=500, detail="Transcription model is not configured on the server.")
+
         if audio.content_type is None or not audio.content_type.startswith("audio"):
             raise HTTPException(status_code=400, detail="Uploaded file must be an audio clip.")
 
@@ -100,25 +114,10 @@ def create_app() -> FastAPI:
         if not audio_bytes:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
 
-        filename = audio.filename or "chunk.webm"
-        content_type = audio.content_type or "audio/webm"
-
-        # OpenAI Whisper currently handles webm opus and wav reliably; ensure the
-        # content type matches the audio stream to avoid "unsupported" errors.
-        if content_type == "application/octet-stream" and filename.endswith(".webm"):
-            content_type = "audio/webm"
-
-        if content_type in {"audio/webm", "audio/webm;codecs=opus"}:
-            content_type = "audio/webm"
-        elif content_type in {"audio/mp4", "audio/m4a", "audio/mp4a-latm"}:
-            content_type = "audio/mp4"
-        elif content_type not in {"audio/wav", "audio/mpeg", "audio/mp3"}:
-            # Fallback to webm to keep compatibility with the MediaRecorder default
-            content_type = "audio/webm"
+        filename = Path(audio.filename).name if audio.filename else "chunk.webm"
 
         processed_bytes: bytes
         processed_filename: str
-        processed_content_type: str
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix or ".webm") as src_file:
             src_file.write(audio_bytes)
@@ -143,74 +142,97 @@ def create_app() -> FastAPI:
             )
             processed_bytes = dst_path.read_bytes()
             processed_filename = Path(filename).with_suffix(".wav").name
-            processed_content_type = "audio/wav"
         except Exception as conversion_error:  # pragma: no cover - diagnostic logging only
             print(f"[transcribe] audio conversion failed: {conversion_error}")
             processed_bytes = audio_bytes
             processed_filename = filename
-            processed_content_type = content_type
         finally:
             src_path.unlink(missing_ok=True)
             dst_path.unlink(missing_ok=True)
 
         def run_transcription() -> object:
             buf = io.BytesIO(processed_bytes)
+            setattr(buf, "name", processed_filename)
             try:
                 buf.seek(0)
                 return openai_client.audio.transcriptions.create(
-                    model="gpt-4o-mini-transcribe",
-                    file=(processed_filename, buf, processed_content_type),
-                    response_format="json",
+                    model=TRANSCRIPTION_MODEL,
+                    file=buf,
+                    response_format="verbose_json",
+                    temperature=0,
                 )
             finally:
                 buf.close()
 
-        transcription = await asyncio.to_thread(run_transcription)
-
-        combined_text = (getattr(transcription, "text", "") or "").strip()
-        raw_segments = getattr(transcription, "segments", None) or []
-
-        segments: list[dict[str, object]] = []
-        for segment in raw_segments:
-            seg_start = int(float(segment.get("start", 0)) * 1000)
-            seg_end = int(float(segment.get("end", 0)) * 1000)
-            segments.append(
-                {
-                    "startMs": start_ms + seg_start,
-                    "endMs": start_ms + (seg_end if seg_end > 0 else duration_ms),
-                    "text": (segment.get("text") or "").strip(),
-                }
-            )
-
-        if not segments and combined_text:
-            fallback_duration = duration_ms if duration_ms > 0 else max(len(combined_text.split()) * 350, 1_000)
-            segments.append(
-                {
-                    "startMs": start_ms,
-                    "endMs": start_ms + fallback_duration,
-                    "text": combined_text,
-                }
-            )
-
-        return JSONResponse({"text": combined_text, "segments": segments})
-
         try:
             transcription = await asyncio.to_thread(run_transcription)
+        except BadRequestError as exc:
+            message = getattr(exc, "message", str(exc))
+            logger.warning("Transcription request rejected: %s", message)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Transcription request was rejected by the speech-to-text service: {message}",
+            ) from exc
+        except RateLimitError as exc:
+            message = getattr(exc, "message", str(exc))
+            logger.warning("Transcription rate limited: %s", message)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Speech-to-text rate limit reached. Please retry: {message}",
+            ) from exc
+        except (APIConnectionError, APITimeoutError) as exc:
+            message = getattr(exc, "message", str(exc))
+            logger.warning("Transient transcription failure: %s", message)
+            raise HTTPException(
+                status_code=502,
+                detail="Transcription failed while contacting the speech-to-text service. Please retry.",
+            ) from exc
+        except APIStatusError as exc:
+            message = getattr(exc, "message", str(exc))
+            logger.exception("Transcription service returned an error: %s", message)
+            status_code = exc.status_code or 502
+            if status_code < 400 or status_code >= 600:
+                status_code = 502
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Transcription service returned an error response: {message}",
+            ) from exc
         except Exception as exc:  # pragma: no cover - surface upstream errors
-            raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}") from exc
+            logger.exception("Unexpected transcription failure")
+            raise HTTPException(
+                status_code=502,
+                detail="Transcription failed while contacting the speech-to-text service.",
+            ) from exc
 
         combined_text = (getattr(transcription, "text", "") or "").strip()
         raw_segments = getattr(transcription, "segments", None) or []
 
+        def _segment_value(segment: object, key: str, default: object = 0) -> object:
+            if isinstance(segment, dict):
+                return segment.get(key, default)
+            return getattr(segment, key, default)
+
         segments: list[dict[str, object]] = []
         for segment in raw_segments:
-            seg_start = int(float(segment.get("start", 0)) * 1000)
-            seg_end = int(float(segment.get("end", 0)) * 1000)
+            seg_start_val = _segment_value(segment, "start", 0)
+            seg_end_val = _segment_value(segment, "end", 0)
+            seg_text_val = _segment_value(segment, "text", "")
+
+            try:
+                seg_start = int(float(seg_start_val) * 1000)
+            except (TypeError, ValueError):
+                seg_start = 0
+
+            try:
+                seg_end = int(float(seg_end_val) * 1000)
+            except (TypeError, ValueError):
+                seg_end = 0
+
             segments.append(
                 {
                     "startMs": start_ms + seg_start,
                     "endMs": start_ms + (seg_end if seg_end > 0 else duration_ms),
-                    "text": (segment.get("text") or "").strip(),
+                    "text": (str(seg_text_val) if seg_text_val is not None else "").strip(),
                 }
             )
 

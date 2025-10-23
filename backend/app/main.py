@@ -5,6 +5,7 @@ from typing import AsyncIterator
 import asyncio
 import io
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime
@@ -22,6 +23,8 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+logger = logging.getLogger(__name__)
 
 SESSION_DATA_DIR = Path(os.getenv("SESSION_DATA_DIR", "data/sessions"))
 
@@ -165,39 +168,14 @@ def create_app() -> FastAPI:
             finally:
                 buf.close()
 
-        transcription = await asyncio.to_thread(run_transcription)
-
-        combined_text = (getattr(transcription, "text", "") or "").strip()
-        raw_segments = getattr(transcription, "segments", None) or []
-
-        segments: list[dict[str, object]] = []
-        for segment in raw_segments:
-            seg_start = int(float(segment.get("start", 0)) * 1000)
-            seg_end = int(float(segment.get("end", 0)) * 1000)
-            segments.append(
-                {
-                    "startMs": start_ms + seg_start,
-                    "endMs": start_ms + (seg_end if seg_end > 0 else duration_ms),
-                    "text": (segment.get("text") or "").strip(),
-                }
-            )
-
-        if not segments and combined_text:
-            fallback_duration = duration_ms if duration_ms > 0 else max(len(combined_text.split()) * 350, 1_000)
-            segments.append(
-                {
-                    "startMs": start_ms,
-                    "endMs": start_ms + fallback_duration,
-                    "text": combined_text,
-                }
-            )
-
-        return JSONResponse({"text": combined_text, "segments": segments})
-
         try:
             transcription = await asyncio.to_thread(run_transcription)
         except Exception as exc:  # pragma: no cover - surface upstream errors
-            raise HTTPException(status_code=502, detail=f"Transcription failed: {exc}") from exc
+            logger.exception("Transcription request failed")
+            raise HTTPException(
+                status_code=502,
+                detail="Transcription failed while contacting the speech-to-text service.",
+            ) from exc
 
         combined_text = (getattr(transcription, "text", "") or "").strip()
         raw_segments = getattr(transcription, "segments", None) or []

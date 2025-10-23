@@ -2,22 +2,12 @@ import React, { useMemo } from 'react';
 import { PresentationFeedback, ScoreBreakdown } from '../types';
 
 const scoreLabels: Record<keyof ScoreBreakdown, string> = {
-  clarity: 'Clarity',
-  engagement: 'Engagement',
-  structure: 'Structure',
   delivery: 'Delivery',
-  audienceConnection: 'Audience Connection',
-  slideUsage: 'Slide Usage',
+  engagement: 'Engagement',
+  slides: 'Slides',
 };
 
-const scoreOrder: (keyof ScoreBreakdown)[] = [
-  'clarity',
-  'engagement',
-  'structure',
-  'delivery',
-  'audienceConnection',
-  'slideUsage',
-];
+const scoreOrder: (keyof ScoreBreakdown)[] = ['delivery', 'engagement', 'slides'];
 
 const getScoreDescriptor = (score: number) => {
   if (score >= 9) return 'Outstanding';

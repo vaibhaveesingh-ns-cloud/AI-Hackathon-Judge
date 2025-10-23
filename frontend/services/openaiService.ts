@@ -6,7 +6,7 @@ import type {
   ResponseOutputItem,
   ResponseOutputMessage,
 } from 'openai/resources/responses/responses';
-import { PresentationFeedback, TranscriptionEntry } from '../types';
+import { PresentationFeedback, ScoreBreakdown, ScoreReasons, TranscriptionEntry } from '../types';
 import finalFeedbackPromptTemplate from '../prompts/finalFeedbackPrompt.txt?raw';
 import { getOpenAIApiKey } from '../utils/getOpenAIApiKey';
 
@@ -14,6 +14,19 @@ const openai = new OpenAI({
   apiKey: getOpenAIApiKey(),
   dangerouslyAllowBrowser: true,
 });
+
+const METRIC_WEIGHTS = {
+  delivery: 0.4,
+  engagement: 0.3,
+  slides: 0.3,
+} as const;
+
+const clampScore = (value: unknown): number => {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  if (numeric < 0) return 0;
+  if (numeric > 10) return 10;
+  return numeric;
+};
 
 const feedbackSchema = {
   type: 'object',
@@ -28,27 +41,21 @@ const feedbackSchema = {
       type: 'object',
       additionalProperties: false,
       properties: {
-        clarity: { type: 'number' },
-        engagement: { type: 'number' },
-        structure: { type: 'number' },
         delivery: { type: 'number' },
-        audienceConnection: { type: 'number' },
-        slideUsage: { type: 'number' },
+        engagement: { type: 'number' },
+        slides: { type: 'number' },
       },
-      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage'],
+      required: ['delivery', 'engagement', 'slides'],
     },
     scoreReasons: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        clarity: { type: 'string' },
-        engagement: { type: 'string' },
-        structure: { type: 'string' },
         delivery: { type: 'string' },
-        audienceConnection: { type: 'string' },
-        slideUsage: { type: 'string' },
+        engagement: { type: 'string' },
+        slides: { type: 'string' },
       },
-      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage'],
+      required: ['delivery', 'engagement', 'slides'],
     },
     strengths: {
       type: 'array',
@@ -240,10 +247,8 @@ export const getFinalPresentationFeedback = async (
   const MIN_AUDIENCE_FRAMES = 1;
 
   if (transcriptWordCount === 0) {
-    throw new Error('No speech captured. Please allow microphone access and ensure audio is being recorded.');
-  }
-
-  if (transcriptWordCount < MIN_TRANSCRIPT_WORDS) {
+    console.warn('No spoken transcript detected. Proceeding with slide and video evidence only.');
+  } else if (transcriptWordCount < MIN_TRANSCRIPT_WORDS) {
     console.warn(`Transcript is shorter than recommended (${transcriptWordCount} words). Feedback quality may be limited.`);
   }
 
@@ -252,7 +257,7 @@ export const getFinalPresentationFeedback = async (
   }
 
   if (audienceEvidenceFrames.length < MIN_AUDIENCE_FRAMES) {
-    throw new Error('Audience camera feed was not captured. Point the audience camera toward listeners and try again.');
+    console.warn('Audience camera feed was not captured. Engagement scoring will rely on available cues.');
   }
 
   const derivedQuestions = questions.length
@@ -311,9 +316,41 @@ export const getFinalPresentationFeedback = async (
     });
 
     const jsonText = extractOutputText(response);
-    const feedback = JSON.parse(jsonText) as Omit<PresentationFeedback, 'questionsAsked'>;
+    const rawFeedback = JSON.parse(jsonText) as Partial<Omit<PresentationFeedback, 'questionsAsked'>>;
+
+    const normalizedBreakdown: ScoreBreakdown = {
+      delivery: clampScore(rawFeedback.scoreBreakdown?.delivery),
+      engagement: clampScore(rawFeedback.scoreBreakdown?.engagement),
+      slides: clampScore(rawFeedback.scoreBreakdown?.slides),
+    };
+
+    const normalizedReasons: ScoreReasons = {
+      delivery: rawFeedback.scoreReasons?.delivery ?? 'Delivery insights were not provided.',
+      engagement: rawFeedback.scoreReasons?.engagement ?? 'Engagement insights were not provided.',
+      slides: rawFeedback.scoreReasons?.slides ?? 'Slide insights were not provided.',
+    };
+
+    const computedOverall = Number(
+      (
+        normalizedBreakdown.delivery * METRIC_WEIGHTS.delivery +
+        normalizedBreakdown.engagement * METRIC_WEIGHTS.engagement +
+        normalizedBreakdown.slides * METRIC_WEIGHTS.slides
+      ).toFixed(2)
+    );
+
+    const strengths = Array.isArray(rawFeedback.strengths) ? rawFeedback.strengths : [];
+    const areasForImprovement = Array.isArray(rawFeedback.areasForImprovement)
+      ? rawFeedback.areasForImprovement
+      : [];
+    const overallSummary = typeof rawFeedback.overallSummary === 'string' ? rawFeedback.overallSummary : '';
+
     return {
-      ...feedback,
+      overallScore: computedOverall,
+      overallSummary,
+      scoreBreakdown: normalizedBreakdown,
+      scoreReasons: normalizedReasons,
+      strengths,
+      areasForImprovement,
       questionsAsked: derivedQuestions,
     };
   } catch (error) {

@@ -18,21 +18,15 @@ export interface TranscriptionEntry {
 }
 
 export interface ScoreBreakdown {
-  clarity: number;
-  engagement: number;
-  structure: number;
   delivery: number;
-  audienceConnection: number;
-  slideUsage: number;
+  engagement: number;
+  slides: number;
 }
 
 export interface ScoreReasons {
-  clarity: string;
-  engagement: string;
-  structure: string;
   delivery: string;
-  audienceConnection: string;
-  slideUsage: string;
+  engagement: string;
+  slides: string;
 }
 
 export interface PresentationFeedback {

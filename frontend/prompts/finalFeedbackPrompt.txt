@@ -21,21 +21,15 @@ EVALUATION PRINCIPLES
   * 9–10 = Excellent / Outstanding performance
 
 SCORING CRITERIA
-- Clarity: clarity of ideas, coherence, accessibility of language, focus of message.
-- Engagement: vocal energy, pacing, enthusiasm, ability to sustain audience interest.
-- Structure: logical flow, effective transitions, clear conclusion or takeaway.
-- Delivery (PresenterCam): body language, posture, gestures, eye contact, confidence inferred from PRESENTERCAM frames plus vocal presence indicators.
-- Audience Connection (AudienceCam): attentiveness and reactions in AUDIENCECAM frames; evidence of sustained engagement (do not penalize for environmental factors).
-- Slide Usage: effectiveness of slides as visual aids (legibility, balance of text/visuals, alignment with narrative).
+- Delivery: overall delivery quality including vocal presence plus PRESENTERCAM evidence (body language, eye contact, confidence, pacing).
+- Engagement: ability to sustain audience interest, interpreted from transcript energy plus AUDIENCECAM reactions.
+- Slides: effectiveness and quality of slides (clarity, organization, design, how well they support the narrative).
 
 WEIGHTING
-Compute `overallScore` as a weighted average of the six criteria using:
-- Clarity 20%
-- Engagement 20%
-- Structure 15%
-- Delivery 20%
-- Audience Connection 15%
-- Slide Usage 10%
+Compute `overallScore` as a weighted average of the three criteria using:
+- Delivery 40%
+- Engagement 30%
+- Slides 30%
 
 STRICT SCORING POLICY
 - Treat each criterion as a gate. All sub-points listed in the criterion must be satisfied before the score can rise above 6. Reserve scores of 9–10 for truly exceptional execution across every sub-point with multiple pieces of evidence.
@@ -46,20 +40,14 @@ OUTPUT FORMAT
 Return **only** valid JSON:
 {
   "scoreBreakdown": {
-    "clarity": number,
-    "engagement": number,
-    "structure": number,
     "delivery": number,
-    "audienceConnection": number,
-    "slideUsage": number
+    "engagement": number,
+    "slides": number
   },
   "scoreReasons": {
-    "clarity": "Evidence-based explanation of what drove the clarity score.",
-    "engagement": "Evidence-based explanation of what drove the engagement score.",
-    "structure": "Evidence-based explanation of what drove the structure score.",
     "delivery": "Evidence-based explanation of what drove the delivery score.",
-    "audienceConnection": "Evidence-based explanation of what drove the audience connection score.",
-    "slideUsage": "Evidence-based explanation of what drove the slide usage score."
+    "engagement": "Evidence-based explanation of what drove the engagement score.",
+    "slides": "Evidence-based explanation of what drove the slides score."
   },
   "overallScore": number,
   "overallSummary": "One concise paragraph summarizing overall performance",

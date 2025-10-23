@@ -1,3 +1,31 @@
+const collectRecorderChunks = (
+  recorder: MediaRecorder | null,
+  chunks: Blob[],
+  expectedMime = 'video/webm;codecs=vp9,opus'
+): Promise<Blob[]> =>
+  new Promise((resolve) => {
+    if (!recorder) {
+      resolve(chunks);
+      return;
+    }
+
+    const finalize = () => {
+      resolve(chunks.map((chunk) => (chunk.type ? chunk : new Blob([chunk], { type: expectedMime }))));
+    };
+
+    if (recorder.state === 'inactive') {
+      finalize();
+      return;
+    }
+
+    recorder.onstop = finalize;
+    try {
+      recorder.stop();
+    } catch (stopError) {
+      console.warn('[mediaRecorder] stop failed', stopError);
+      finalize();
+    }
+  });
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   SessionStatus,
@@ -599,9 +627,11 @@ const App: React.FC = () => {
   const uploadVideoIfAvailable = useCallback(
     async (role: 'presenter' | 'audience', chunks: Blob[], startMs: number, durationMs: number) => {
       if (chunks.length === 0) {
+        console.warn('[upload]', role, 'skipped - no chunks');
         return;
       }
-      const videoBlob = new Blob(chunks, { type: 'video/webm' });
+      const videoBlob = new Blob(chunks, { type: 'video/webm;codecs=vp9,opus' });
+      console.debug('[upload]', role, { size: videoBlob.size, startMs, durationMs });
       await uploadSessionVideo(sessionId, role, videoBlob, startMs, durationMs);
     },
     [sessionId]
@@ -637,9 +667,12 @@ const App: React.FC = () => {
 
     setTranscriptionHistory(workingHistory);
 
+    const presenterChunks = await collectRecorderChunks(presenterRecorderRef.current, presenterChunksRef.current);
+    const audienceChunks = await collectRecorderChunks(audienceRecorderRef.current, audienceChunksRef.current);
+
     try {
-      await uploadVideoIfAvailable('presenter', presenterChunksRef.current, 0, durationMs);
-      await uploadVideoIfAvailable('audience', audienceChunksRef.current, 0, durationMs);
+      await uploadVideoIfAvailable('presenter', presenterChunks, 0, durationMs);
+      await uploadVideoIfAvailable('audience', audienceChunks, 0, durationMs);
       setIsAnalysisPending(true);
       pollSessionAnalysis(sessionId)
         .then((analysis) => {

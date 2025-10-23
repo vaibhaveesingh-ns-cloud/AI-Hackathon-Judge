@@ -1,8 +1,21 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { PresentationFeedback, TranscriptionEntry } from '../types';
+import { PresentationFeedback, ScoreBreakdown, ScoreReasons, TranscriptionEntry } from '../types';
 import { getGeminiApiKey } from '../utils/getGeminiApiKey';
 
 const ai = new GoogleGenAI({ apiKey: getGeminiApiKey() });
+
+const METRIC_WEIGHTS = {
+  delivery: 0.4,
+  engagement: 0.3,
+  slides: 0.3,
+} as const;
+
+const clampScore = (value: unknown): number => {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  if (numeric < 0) return 0;
+  if (numeric > 10) return 10;
+  return numeric;
+};
 
 const feedbackSchema = {
   type: Type.OBJECT,
@@ -18,26 +31,20 @@ const feedbackSchema = {
     scoreBreakdown: {
       type: Type.OBJECT,
       properties: {
-        clarity: { type: Type.NUMBER, description: 'Score (0-10) for clarity of speech and messaging.' },
-        engagement: { type: Type.NUMBER, description: 'Score (0-10) for audience engagement and energy.' },
-        structure: { type: Type.NUMBER, description: 'Score (0-10) for logical flow and organization.' },
-        delivery: { type: Type.NUMBER, description: 'Score (0-10) for visual delivery from provided frames.' },
-        audienceConnection: { type: Type.NUMBER, description: 'Score (0-10) for audience attentiveness and reactions.' },
-        slideUsage: { type: Type.NUMBER, description: 'Score (0-10) for how effectively slides supported the story.' }
+        delivery: { type: Type.NUMBER, description: 'Score (0-10) for delivery quality (presentation presence, body language, voice).' },
+        engagement: { type: Type.NUMBER, description: 'Score (0-10) for sustaining audience engagement and energy.' },
+        slides: { type: Type.NUMBER, description: 'Score (0-10) for slide craftsmanship and narrative support.' }
       },
-      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage']
+      required: ['delivery', 'engagement', 'slides']
     },
     scoreReasons: {
       type: Type.OBJECT,
       properties: {
-        clarity: { type: Type.STRING, description: 'Reasoning behind the clarity score backed by presentation evidence.' },
-        engagement: { type: Type.STRING, description: 'Reasoning behind the engagement score backed by presentation evidence.' },
-        structure: { type: Type.STRING, description: 'Reasoning behind the structure score backed by presentation evidence.' },
         delivery: { type: Type.STRING, description: 'Reasoning behind the delivery score backed by presentation evidence.' },
-        audienceConnection: { type: Type.STRING, description: 'Reasoning behind the audience connection score backed by presentation evidence.' },
-        slideUsage: { type: Type.STRING, description: 'Reasoning behind the slide usage score backed by presentation evidence.' }
+        engagement: { type: Type.STRING, description: 'Reasoning behind the engagement score backed by presentation evidence.' },
+        slides: { type: Type.STRING, description: 'Reasoning behind the slides score backed by presentation evidence.' }
       },
-      required: ['clarity', 'engagement', 'structure', 'delivery', 'audienceConnection', 'slideUsage']
+      required: ['delivery', 'engagement', 'slides']
     },
     strengths: {
       type: Type.ARRAY,
@@ -149,19 +156,13 @@ export const getFinalPresentationFeedback = async (
     scores. Still, echo the provided questions in a 'questionsAsked' field of your JSON so they can be displayed on the
     evaluation scorecard.
 
-    CRITERIA (scores must be based only on the main presentation delivery and slide content; Q&A responses should not
-    affect scoring):
-    1. Clarity: Was the message clear and easy to understand?
-    2. Engagement: Was the speaker energetic and engaging?
-    3. Structure: Was the presentation well-organized with a logical flow?
-    4. Delivery: Assess body language, eye contact, and gestures from the video frames.
-    5. Audience Connection: Gauge attentiveness and reactions from the frames.
-    6. Slide Usage: How effectively were the slides used as a visual aid vs. a script?
+    Evaluate strictly against three criteria (ignore Q&A responses when scoring):
+    1. Delivery (40% weight): vocal presence plus PRESENTERCAM evidence such as body language, confidence, gestures, eye contact.
+    2. Engagement (30% weight): ability to sustain audience interest, inferred from transcript energy and AUDIENCECAM reactions.
+    3. Slides (30% weight): slide design quality, clarity, and alignment with the spoken narrative.
 
-    Based on these criteria, provide scores from 0-10 for each category in the 'scoreBreakdown'. Also, calculate a weighted
-    'overallScore'. Write a concise 'overallSummary', list the top 3-4 'strengths' and 'areasForImprovement', and supply a
-    "scoreReasons" object with clear, evidence-grounded explanations (one per criterion) describing why each score was
-    assigned.
+    Provide 0-10 scores for each criterion in "scoreBreakdown", apply the weights above for "overallScore", and supply
+    evidence-backed explanations in "scoreReasons". Summarize the overall performance and outline strengths and areas for improvement.
 
     ---
     MAIN PRESENTATION TRANSCRIPT:
@@ -196,9 +197,41 @@ export const getFinalPresentationFeedback = async (
     });
 
     const jsonText = response.text;
-    const feedback = JSON.parse(jsonText) as Omit<PresentationFeedback, 'questionsAsked'>;
+    const rawFeedback = JSON.parse(jsonText) as Partial<Omit<PresentationFeedback, 'questionsAsked'>>;
+
+    const normalizedBreakdown: ScoreBreakdown = {
+      delivery: clampScore(rawFeedback.scoreBreakdown?.delivery),
+      engagement: clampScore(rawFeedback.scoreBreakdown?.engagement),
+      slides: clampScore(rawFeedback.scoreBreakdown?.slides)
+    };
+
+    const normalizedReasons: ScoreReasons = {
+      delivery: rawFeedback.scoreReasons?.delivery ?? 'Delivery insights were not provided.',
+      engagement: rawFeedback.scoreReasons?.engagement ?? 'Engagement insights were not provided.',
+      slides: rawFeedback.scoreReasons?.slides ?? 'Slide insights were not provided.'
+    };
+
+    const computedOverall = Number(
+      (
+        normalizedBreakdown.delivery * METRIC_WEIGHTS.delivery +
+        normalizedBreakdown.engagement * METRIC_WEIGHTS.engagement +
+        normalizedBreakdown.slides * METRIC_WEIGHTS.slides
+      ).toFixed(2)
+    );
+
+    const strengths = Array.isArray(rawFeedback.strengths) ? rawFeedback.strengths : [];
+    const areasForImprovement = Array.isArray(rawFeedback.areasForImprovement)
+      ? rawFeedback.areasForImprovement
+      : [];
+    const overallSummary = typeof rawFeedback.overallSummary === 'string' ? rawFeedback.overallSummary : '';
+
     return {
-      ...feedback,
+      overallScore: computedOverall,
+      overallSummary,
+      scoreBreakdown: normalizedBreakdown,
+      scoreReasons: normalizedReasons,
+      strengths,
+      areasForImprovement,
       questionsAsked: derivedQuestions
     };
   } catch (error) {

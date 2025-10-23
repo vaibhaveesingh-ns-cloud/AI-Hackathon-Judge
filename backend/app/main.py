@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import asyncio
-import io
 import json
 import logging
 import os
@@ -114,19 +113,26 @@ def create_app() -> FastAPI:
         if not audio_bytes:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
 
+        original_name = Path(audio.filename).name if audio.filename else "chunk.webm"
+        original_suffix = Path(original_name).suffix.lower()
+        if original_suffix not in SUPPORTED_AUDIO_EXTENSIONS:
+            original_suffix = ".webm"
         filename = Path(audio.filename).name if audio.filename else "chunk.webm"
 
         processed_bytes: bytes
         processed_filename: str
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix or ".webm") as src_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=original_suffix) as src_file:
             src_file.write(audio_bytes)
             src_path = Path(src_file.name)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as dst_file:
-            dst_path = Path(dst_file.name)
+        processed_path = src_path
+        cleanup_paths = [src_path]
 
         try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as dst_file:
+                dst_path = Path(dst_file.name)
+            cleanup_paths.append(dst_path)
             (
                 ffmpeg
                 .input(str(src_path))
@@ -198,11 +204,15 @@ def create_app() -> FastAPI:
                 detail=f"Transcription service returned an error response: {message}",
             ) from exc
         except Exception as exc:  # pragma: no cover - surface upstream errors
+            logger.exception("Unexpected transcription failure")
             logger.exception("Transcription request failed")
             raise HTTPException(
                 status_code=502,
                 detail="Transcription failed while contacting the speech-to-text service.",
             ) from exc
+        finally:
+            for path in cleanup_paths:
+                path.unlink(missing_ok=True)
 
         combined_text = (getattr(transcription, "text", "") or "").strip()
         raw_segments = getattr(transcription, "segments", None) or []

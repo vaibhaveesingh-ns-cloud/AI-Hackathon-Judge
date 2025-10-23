@@ -3,14 +3,17 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import asyncio
+import io
 import json
 import logging
 import os
 import tempfile
 from datetime import datetime
 
+import httpx
+import websockets
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import (
@@ -22,6 +25,8 @@ from openai import (
     RateLimitError,
 )
 import ffmpeg
+from starlette.websockets import WebSocketState
+from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 
 from .analysis_service import run_analysis_and_store
 
@@ -34,6 +39,15 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 logger = logging.getLogger(__name__)
 
 SESSION_DATA_DIR = Path(os.getenv("SESSION_DATA_DIR", "data/sessions"))
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".webm",
+    ".wav",
+    ".mp3",
+    ".mpeg",
+    ".mpga",
+    ".m4a",
+    ".mp4",
+}
 
 
 def _ensure_session_directory(session_id: str) -> Path:
@@ -126,35 +140,41 @@ def create_app() -> FastAPI:
             src_file.write(audio_bytes)
             src_path = Path(src_file.name)
 
-        processed_path = src_path
         cleanup_paths = [src_path]
 
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as dst_file:
                 dst_path = Path(dst_file.name)
             cleanup_paths.append(dst_path)
+
             (
                 ffmpeg
                 .input(str(src_path))
                 .output(
                     str(dst_path),
-                    format="wav",
-                    acodec="pcm_s16le",
                     ac=1,
                     ar=16000,
+                    acodec="pcm_s16le",
+                    format="wav",
                 )
                 .overwrite_output()
-                .run(quiet=True)
+                .run(cmd="ffmpeg", quiet=True)
             )
-            processed_bytes = dst_path.read_bytes()
-            processed_filename = Path(filename).with_suffix(".wav").name
+
+            if dst_path.exists() and dst_path.stat().st_size > 0:
+                processed_bytes = dst_path.read_bytes()
+                processed_filename = Path(filename).with_suffix(".wav").name
+            else:
+                raise RuntimeError("ffmpeg produced empty wav output")
         except Exception as conversion_error:  # pragma: no cover - diagnostic logging only
-            print(f"[transcribe] audio conversion failed: {conversion_error}")
+            logger.warning("[transcribe] audio conversion failed: %s", conversion_error)
             processed_bytes = audio_bytes
             processed_filename = filename
         finally:
             src_path.unlink(missing_ok=True)
-            dst_path.unlink(missing_ok=True)
+
+        if not processed_bytes:
+            raise HTTPException(status_code=400, detail="Converted audio clip is empty.")
 
         def run_transcription() -> object:
             buf = io.BytesIO(processed_bytes)
@@ -169,6 +189,12 @@ def create_app() -> FastAPI:
                 )
             finally:
                 buf.close()
+
+        try:
+            for path in cleanup_paths[1:]:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
         try:
             transcription = await asyncio.to_thread(run_transcription)

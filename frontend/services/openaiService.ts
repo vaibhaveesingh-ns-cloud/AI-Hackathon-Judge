@@ -150,11 +150,13 @@ export interface TranscriptionResponse {
 export const transcribeAudioChunk = async (
   audioBlob: Blob,
   startMs = 0,
-  durationMs = 0
+  durationMs = 0,
+  preferredExtension?: string
 ): Promise<TranscriptionResponse> => {
   const { extension } = normalizeAudioMimeType(audioBlob.type);
+  const effectiveExtension = preferredExtension || extension;
   const formData = new FormData();
-  formData.append('audio', audioBlob, `chunk.${extension}`);
+  formData.append('file', audioBlob, `chunk.${effectiveExtension}`);
   formData.append('start_ms', String(startMs));
   formData.append('duration_ms', String(durationMs));
 

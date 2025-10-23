@@ -113,6 +113,9 @@ const App: React.FC = () => {
   const pendingTranscriptionsRef = useRef<Set<Promise<void>>>(new Set());
   const recordingStartRef = useRef<number>(0);
   const lastChunkTimestampRef = useRef<number>(0);
+  const audioBufferRef = useRef<Blob[]>([]);
+  const audioBufferSizeRef = useRef<number>(0);
+  const audioBufferStartRef = useRef<number | null>(null);
   const presenterRecorderRef = useRef<MediaRecorder | null>(null);
   const audienceRecorderRef = useRef<MediaRecorder | null>(null);
   const presenterChunksRef = useRef<Blob[]>([]);
@@ -129,6 +132,66 @@ const App: React.FC = () => {
       await Promise.allSettled(pending);
     }
   }, []);
+
+  const queueTranscription = useCallback(
+    (audioBlob: Blob, startOffsetMs: number, durationMs: number) => {
+      const transcriptionPromise = transcribeAudioChunk(audioBlob, startOffsetMs, durationMs)
+        .then(({ text, segments }) => {
+          if (text) {
+            setLiveTranscript((prev) => `${prev}\n${text}`.trim());
+          }
+
+          if (segments.length > 0) {
+            setTranscriptionHistory((prev) => {
+              const updated = [...prev];
+              segments.forEach((segment) => {
+                updated.push({
+                  speaker: 'user',
+                  text: segment.text,
+                  context: 'presentation',
+                  startMs: segment.startMs,
+                  endMs: segment.endMs,
+                });
+              });
+              return updated;
+            });
+          }
+        })
+        .catch((err) => {
+          console.error('Chunk transcription failed:', err);
+        });
+
+      pendingTranscriptionsRef.current.add(transcriptionPromise);
+      transcriptionPromise.finally(() => {
+        pendingTranscriptionsRef.current.delete(transcriptionPromise);
+      });
+    },
+    [setLiveTranscript, setTranscriptionHistory]
+  );
+
+  const sendBufferedAudio = useCallback(
+    (force = false) => {
+      if (audioBufferRef.current.length === 0) return;
+      if (!force && audioBufferSizeRef.current < MIN_AUDIO_CHUNK_BYTES) {
+        return;
+      }
+
+      const absoluteStart = audioBufferStartRef.current ?? lastChunkTimestampRef.current;
+      const chunkEnd = Date.now();
+      const durationMs = Math.max(chunkEnd - absoluteStart, 1);
+
+      const combinedBlob = new Blob(audioBufferRef.current, { type: 'audio/webm;codecs=opus' });
+
+      audioBufferRef.current = [];
+      audioBufferSizeRef.current = 0;
+      audioBufferStartRef.current = null;
+      lastChunkTimestampRef.current = chunkEnd;
+
+      const relativeStart = absoluteStart - recordingStartRef.current;
+      queueTranscription(combinedBlob, relativeStart, durationMs);
+    },
+    [queueTranscription]
+  );
 
   const formatCameraLabel = (device: MediaDeviceInfo, index: number) =>
     device.label || `Camera ${index + 1}`;
@@ -325,9 +388,14 @@ const App: React.FC = () => {
     stopStream(speakerStreamRef, speakerFrameIntervalRef, speakerVideoRef);
     stopStream(listenerStreamRef, listenerFrameIntervalRef, listenerVideoRef);
 
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.stop();
+    sendBufferedAudio(true);
+
+    if (mediaRecorderRef.current) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (recorderStopError) {
+        console.error('Error stopping media recorder:', recorderStopError);
+      }
     }
     mediaRecorderRef.current = null;
 
@@ -487,56 +555,20 @@ const App: React.FC = () => {
                 }
 
                 const { size, type } = event.data;
-                if (size < MIN_AUDIO_CHUNK_BYTES) {
-                    console.warn('[mediaRecorder] skipping tiny audio chunk', { size, type });
-                    return;
-                }
-
-                console.debug('[mediaRecorder] processing audio chunk', { size, type });
+                console.debug('[mediaRecorder] buffering audio chunk', { size, type });
 
                 const chunkBlob = event.data.type
                     ? event.data
                     : new Blob([event.data], { type: 'audio/webm;codecs=opus' });
 
-                const chunkStart = lastChunkTimestampRef.current;
-                const chunkEnd = Date.now();
-                const durationMs = chunkEnd - chunkStart;
-                lastChunkTimestampRef.current = chunkEnd;
+                if (audioBufferStartRef.current === null) {
+                    audioBufferStartRef.current = lastChunkTimestampRef.current;
+                }
 
-                const transcriptionPromise = transcribeAudioChunk(
-                    chunkBlob,
-                    chunkStart - recordingStartRef.current,
-                    durationMs
-                )
-                    .then(({ text, segments }) => {
-                        if (text) {
-                            setLiveTranscript((prev) => `${prev}\n${text}`.trim());
-                        }
+                audioBufferRef.current.push(chunkBlob);
+                audioBufferSizeRef.current += chunkBlob.size;
 
-                        if (segments.length > 0) {
-                            setTranscriptionHistory((prev) => {
-                                const updated = [...prev];
-                                segments.forEach((segment) => {
-                                    updated.push({
-                                        speaker: 'user',
-                                        text: segment.text,
-                                        context: 'presentation',
-                                        startMs: segment.startMs,
-                                        endMs: segment.endMs,
-                                    });
-                                });
-                                return updated;
-                            });
-                        }
-                    })
-                    .catch((err) => {
-                        console.error('Chunk transcription failed:', err);
-                    });
-
-                pendingTranscriptionsRef.current.add(transcriptionPromise);
-                transcriptionPromise.finally(() => {
-                    pendingTranscriptionsRef.current.delete(transcriptionPromise);
-                });
+                sendBufferedAudio();
             };
             recorder.start(AUDIO_CHUNK_DURATION_MS);
             mediaRecorderRef.current = recorder;

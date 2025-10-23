@@ -1,3 +1,12 @@
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types';
+import PitchPerfectIcon from './components/PitchPerfectIcon';
+import ControlButton from './components/ControlButton';
+import FeedbackCard from './components/FeedbackCard';
+import { getFinalPresentationFeedback, generateQuestions, transcribeAudioChunk } from './services/openaiService';
+import { uploadSessionVideo } from './services/sessionService';
+import { parsePptx } from './utils/pptxParser';
+
 const collectRecorderChunks = (
   recorder: MediaRecorder | null,
   chunks: Blob[],
@@ -26,14 +35,7 @@ const collectRecorderChunks = (
       finalize();
     }
   });
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types';
-import PitchPerfectIcon from './components/PitchPerfectIcon';
-import ControlButton from './components/ControlButton';
-import FeedbackCard from './components/FeedbackCard';
-import { getFinalPresentationFeedback, generateQuestions, transcribeAudioChunk } from './services/openaiService';
-import { uploadSessionVideo } from './services/sessionService';
-import { parsePptx } from './utils/pptxParser';
+
 
 const getFrameAsBase64 = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement): string | null => {
     if (videoEl.readyState >= 2) {
@@ -66,8 +68,29 @@ const getMediaErrorMessage = (err: unknown): string => {
 
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
 const AUDIO_CHUNK_DURATION_MS = 4000;
-const MIN_AUDIO_CHUNK_BYTES = 4096;
+const MIN_AUDIO_CHUNK_BYTES = 64 * 1024; // Prevent flushing container headers alone
 const HUNK_DURATION_MS = 5000;
+const AUDIO_MIME_CANDIDATES = [
+  { mimeType: 'audio/webm;codecs=opus', extension: 'webm' },
+  { mimeType: 'audio/webm', extension: 'webm' },
+  { mimeType: 'audio/mp4;codecs=mp4a.40.2', extension: 'm4a' },
+  { mimeType: 'audio/mp4', extension: 'mp4' },
+  { mimeType: 'audio/mpeg', extension: 'mp3' },
+  { mimeType: 'audio/wav;codecs=pcm', extension: 'wav' },
+  { mimeType: 'audio/wav', extension: 'wav' },
+];
+const DEFAULT_AUDIO_MIME = AUDIO_MIME_CANDIDATES[0];
+
+const deriveExtensionFromMime = (mime: string | undefined): string => {
+  if (!mime) return DEFAULT_AUDIO_MIME.extension;
+  const lower = mime.toLowerCase();
+  if (lower.includes('webm')) return 'webm';
+  if (lower.includes('ogg')) return 'ogg';
+  if (lower.includes('m4a') || lower.includes('mp4')) return 'm4a';
+  if (lower.includes('mpeg') || lower.includes('mp3')) return 'mp3';
+  if (lower.includes('wav')) return 'wav';
+  return DEFAULT_AUDIO_MIME.extension;
+};
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<SessionStatus>(SessionStatus.IDLE);
@@ -116,6 +139,8 @@ const App: React.FC = () => {
   const audioBufferRef = useRef<Blob[]>([]);
   const audioBufferSizeRef = useRef<number>(0);
   const audioBufferStartRef = useRef<number | null>(null);
+  const audioMimeTypeRef = useRef<string>(DEFAULT_AUDIO_MIME.mimeType);
+  const audioExtensionRef = useRef<string>(DEFAULT_AUDIO_MIME.extension);
   const presenterRecorderRef = useRef<MediaRecorder | null>(null);
   const audienceRecorderRef = useRef<MediaRecorder | null>(null);
   const presenterChunksRef = useRef<Blob[]>([]);
@@ -135,7 +160,7 @@ const App: React.FC = () => {
 
   const queueTranscription = useCallback(
     (audioBlob: Blob, startOffsetMs: number, durationMs: number) => {
-      const transcriptionPromise = transcribeAudioChunk(audioBlob, startOffsetMs, durationMs)
+      const transcriptionPromise = transcribeAudioChunk(audioBlob, startOffsetMs, durationMs, audioExtensionRef.current)
         .then(({ text, segments }) => {
           if (text) {
             setLiveTranscript((prev) => `${prev}\n${text}`.trim());
@@ -180,12 +205,18 @@ const App: React.FC = () => {
       const chunkEnd = Date.now();
       const durationMs = Math.max(chunkEnd - absoluteStart, 1);
 
-      const combinedBlob = new Blob(audioBufferRef.current, { type: 'audio/webm;codecs=opus' });
+      const combinedBlob = new Blob(audioBufferRef.current, { type: audioMimeTypeRef.current });
+      if (combinedBlob.size === 0) {
+        console.warn('[mediaRecorder] combined blob had zero size, skipping upload');
+        return;
+      }
+
       console.debug('[mediaRecorder] sending buffered audio', {
         bufferedChunks: audioBufferRef.current.length,
         combinedSize: combinedBlob.size,
         durationMs,
         force,
+        mimeType: audioMimeTypeRef.current,
       });
 
       audioBufferRef.current = [];
@@ -551,28 +582,45 @@ const App: React.FC = () => {
 
         const audioStream = new MediaStream(audioTracks);
         try {
-            const recorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm;codecs=opus' });
+            let preferredFormat = DEFAULT_AUDIO_MIME;
+            if (typeof MediaRecorder.isTypeSupported === 'function') {
+              const candidate = AUDIO_MIME_CANDIDATES.find(({ mimeType }) => MediaRecorder.isTypeSupported(mimeType));
+              if (candidate) {
+                preferredFormat = candidate;
+              }
+            }
+
+            let recorder: MediaRecorder;
+            try {
+              recorder = new MediaRecorder(audioStream, { mimeType: preferredFormat.mimeType });
+            } catch (recorderInitError) {
+              console.warn('Preferred audio MIME unsupported, falling back to browser default.', recorderInitError);
+              recorder = new MediaRecorder(audioStream);
+            }
+
+            audioMimeTypeRef.current = recorder.mimeType || preferredFormat.mimeType;
+            audioExtensionRef.current = deriveExtensionFromMime(audioMimeTypeRef.current);
+
             recordingStartRef.current = Date.now();
             lastChunkTimestampRef.current = recordingStartRef.current;
             recorder.ondataavailable = (event) => {
-                if (!event.data) {
-                    console.warn('[mediaRecorder] dataavailable received without blob');
+                if (!event.data || event.data.size === 0) {
                     return;
                 }
 
                 const { size, type } = event.data;
-                console.debug('[mediaRecorder] buffering audio chunk', { size, type });
-
-                const chunkBlob = event.data.type
-                    ? event.data
-                    : new Blob([event.data], { type: 'audio/webm;codecs=opus' });
+                console.debug('[mediaRecorder] buffering audio chunk', {
+                    size,
+                    type,
+                    recorderMime: audioMimeTypeRef.current,
+                });
 
                 if (audioBufferStartRef.current === null) {
                     audioBufferStartRef.current = lastChunkTimestampRef.current;
                 }
 
-                audioBufferRef.current.push(chunkBlob);
-                audioBufferSizeRef.current += chunkBlob.size;
+                audioBufferRef.current.push(event.data);
+                audioBufferSizeRef.current += event.data.size;
 
                 sendBufferedAudio();
             };

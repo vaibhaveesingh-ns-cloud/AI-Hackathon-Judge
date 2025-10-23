@@ -198,7 +198,7 @@ def create_app() -> FastAPI:
                 detail=f"Transcription service returned an error response: {message}",
             ) from exc
         except Exception as exc:  # pragma: no cover - surface upstream errors
-            logger.exception("Unexpected transcription failure")
+            logger.exception("Transcription request failed")
             raise HTTPException(
                 status_code=502,
                 detail="Transcription failed while contacting the speech-to-text service.",

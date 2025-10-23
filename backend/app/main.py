@@ -100,6 +100,19 @@ def create_app() -> FastAPI:
         filename = audio.filename or "chunk.webm"
         content_type = audio.content_type or "audio/webm"
 
+        # OpenAI Whisper currently handles webm opus and wav reliably; ensure the
+        # content type matches the audio stream to avoid "unsupported" errors.
+        if content_type == "application/octet-stream" and filename.endswith(".webm"):
+            content_type = "audio/webm"
+
+        if content_type in {"audio/webm", "audio/webm;codecs=opus"}:
+            content_type = "audio/webm"
+        elif content_type in {"audio/mp4", "audio/m4a", "audio/mp4a-latm"}:
+            content_type = "audio/mp4"
+        elif content_type not in {"audio/wav", "audio/mpeg", "audio/mp3"}:
+            # Fallback to webm to keep compatibility with the MediaRecorder default
+            content_type = "audio/webm"
+
         def run_transcription() -> object:
             return openai_client.audio.transcriptions.create(
                 model="gpt-4o-mini-transcribe",

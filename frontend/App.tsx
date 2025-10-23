@@ -65,7 +65,7 @@ const getMediaErrorMessage = (err: unknown): string => {
 };
 
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
-const AUDIO_CHUNK_DURATION_MS = 5000;
+const AUDIO_CHUNK_DURATION_MS = 2000;
 const MIN_AUDIO_CHUNK_BYTES = 512;
 const HUNK_DURATION_MS = 5000;
 

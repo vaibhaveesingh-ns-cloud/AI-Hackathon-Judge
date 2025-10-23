@@ -65,8 +65,8 @@ const getMediaErrorMessage = (err: unknown): string => {
 };
 
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
-const AUDIO_CHUNK_DURATION_MS = 2000;
-const MIN_AUDIO_CHUNK_BYTES = 512;
+const AUDIO_CHUNK_DURATION_MS = 4000;
+const MIN_AUDIO_CHUNK_BYTES = 4096;
 const HUNK_DURATION_MS = 5000;
 
 const App: React.FC = () => {
@@ -181,6 +181,12 @@ const App: React.FC = () => {
       const durationMs = Math.max(chunkEnd - absoluteStart, 1);
 
       const combinedBlob = new Blob(audioBufferRef.current, { type: 'audio/webm;codecs=opus' });
+      console.debug('[mediaRecorder] sending buffered audio', {
+        bufferedChunks: audioBufferRef.current.length,
+        combinedSize: combinedBlob.size,
+        durationMs,
+        force,
+      });
 
       audioBufferRef.current = [];
       audioBufferSizeRef.current = 0;

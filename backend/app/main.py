@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import asyncio
+import io
 import json
 import os
 import tempfile
@@ -13,6 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPExcept
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openai import OpenAI
+import ffmpeg
 
 from .analysis_service import run_analysis_and_store
 
@@ -114,9 +116,8 @@ def create_app() -> FastAPI:
             # Fallback to webm to keep compatibility with the MediaRecorder default
             content_type = "audio/webm"
 
-        processed_bytes = audio_bytes
-        processed_filename = filename
-        processed_content_type = content_type
+        processed_file_handle: io.BufferedReader | io.BytesIO
+        cleanup_path: Path | None = None
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix or ".webm") as src_file:
             src_file.write(audio_bytes)
@@ -133,23 +134,59 @@ def create_app() -> FastAPI:
                 .overwrite_output()
                 .run(quiet=True)
             )
-            processed_bytes = dst_path.read_bytes()
-            processed_filename = Path(filename).with_suffix(".wav").name
-            processed_content_type = "audio/wav"
+            processed_file_handle = dst_path.open("rb")
+            cleanup_path = dst_path
         except Exception as conversion_error:  # pragma: no cover - diagnostic logging only
             print(f"[transcribe] audio conversion failed: {conversion_error}")
+            processed_file_handle = io.BytesIO(audio_bytes)
+            processed_file_handle.seek(0)
         finally:
             src_path.unlink(missing_ok=True)
-            dst_path.unlink(missing_ok=True)
 
         def run_transcription() -> object:
-            return openai_client.audio.transcriptions.create(
-                model="gpt-4o-mini-transcribe",
-                file=(processed_filename, processed_bytes, processed_content_type),
-                language="en",
-                response_format="json",
-                timestamp_granularities=["segment"],
+            try:
+                return openai_client.audio.transcriptions.create(
+                    model="gpt-4o-mini-transcribe",
+                    file=processed_file_handle,
+                    response_format="json",
+                )
+            finally:
+                if cleanup_path is not None:
+                    processed_file_handle.close()
+                    cleanup_path.unlink(missing_ok=True)
+
+        try:
+            transcription = await asyncio.to_thread(run_transcription)
+        finally:
+            if isinstance(processed_file_handle, io.BytesIO):
+                processed_file_handle.close()
+
+        combined_text = (getattr(transcription, "text", "") or "").strip()
+        raw_segments = getattr(transcription, "segments", None) or []
+
+        segments: list[dict[str, object]] = []
+        for segment in raw_segments:
+            seg_start = int(float(segment.get("start", 0)) * 1000)
+            seg_end = int(float(segment.get("end", 0)) * 1000)
+            segments.append(
+                {
+                    "startMs": start_ms + seg_start,
+                    "endMs": start_ms + (seg_end if seg_end > 0 else duration_ms),
+                    "text": (segment.get("text") or "").strip(),
+                }
             )
+
+        if not segments and combined_text:
+            fallback_duration = duration_ms if duration_ms > 0 else max(len(combined_text.split()) * 350, 1_000)
+            segments.append(
+                {
+                    "startMs": start_ms,
+                    "endMs": start_ms + fallback_duration,
+                    "text": combined_text,
+                }
+            )
+
+        return JSONResponse({"text": combined_text, "segments": segments})
 
         try:
             transcription = await asyncio.to_thread(run_transcription)

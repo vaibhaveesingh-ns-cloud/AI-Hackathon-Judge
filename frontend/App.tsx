@@ -1,9 +1,16 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types';
+import {
+  SessionStatus,
+  TranscriptionEntry,
+  PresentationFeedback,
+  SessionEngagementAnalysis,
+} from './types';
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
+import EngagementDashboard from './components/EngagementDashboard';
 import { getFinalPresentationFeedback, generateQuestions, transcribeAudioChunk } from './services/openaiService';
+import { uploadSessionVideo, pollSessionAnalysis } from './services/sessionService';
 import { parsePptx } from './utils/pptxParser';
 
 const getFrameAsBase64 = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement): string | null => {
@@ -83,6 +90,13 @@ const App: React.FC = () => {
   const pendingTranscriptionsRef = useRef<Set<Promise<void>>>(new Set());
   const recordingStartRef = useRef<number>(0);
   const lastChunkTimestampRef = useRef<number>(0);
+  const presenterRecorderRef = useRef<MediaRecorder | null>(null);
+  const audienceRecorderRef = useRef<MediaRecorder | null>(null);
+  const presenterChunksRef = useRef<Blob[]>([]);
+  const audienceChunksRef = useRef<Blob[]>([]);
+  const [engagementAnalysis, setEngagementAnalysis] = useState<SessionEngagementAnalysis | null>(null);
+  const [isAnalysisPending, setIsAnalysisPending] = useState<boolean>(false);
+  const [sessionId] = useState<string>(() => crypto.randomUUID());
 
   useEffect(() => {
     transcriptionHistoryRef.current = transcriptionHistory;
@@ -295,6 +309,19 @@ const App: React.FC = () => {
       recorder.stop();
     }
     mediaRecorderRef.current = null;
+
+    const presenterRecorder = presenterRecorderRef.current;
+    if (presenterRecorder && presenterRecorder.state !== 'inactive') {
+      presenterRecorder.stop();
+    }
+    presenterRecorderRef.current = null;
+
+    const audienceRecorder = audienceRecorderRef.current;
+    if (audienceRecorder && audienceRecorder.state !== 'inactive') {
+      audienceRecorder.stop();
+    }
+    audienceRecorderRef.current = null;
+
     setListeningStartTime(null);
     setElapsedTime('00:00:00');
     recordingStartRef.current = 0;
@@ -353,6 +380,8 @@ const App: React.FC = () => {
     setLiveTranscript('');
     speakerVideoFramesRef.current = [];
     listenerVideoFramesRef.current = [];
+    presenterChunksRef.current = [];
+    audienceChunksRef.current = [];
     setCurrentSlide(0);
     setQuestions([]);
     setPptxFile(null);
@@ -361,7 +390,9 @@ const App: React.FC = () => {
     setElapsedTime('00:00:00');
     recordingStartRef.current = 0;
     lastChunkTimestampRef.current = 0;
-  }
+    setEngagementAnalysis(null);
+    setIsAnalysisPending(false);
+  };
 
   const handleStart = useCallback(async () => {
     setStatus(SessionStatus.CONNECTING);
@@ -478,6 +509,34 @@ const App: React.FC = () => {
             console.error('MediaRecorder error:', recorderError);
             throw new Error('Could not start audio recording. Please check browser compatibility.');
         }
+        presenterChunksRef.current = [];
+        audienceChunksRef.current = [];
+
+        if (speakerStream) {
+            try {
+                const presenterRecorder = new MediaRecorder(speakerStream, { mimeType: 'video/webm;codecs=vp9,opus' });
+                presenterRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) presenterChunksRef.current.push(event.data);
+                };
+                presenterRecorder.start();
+                presenterRecorderRef.current = presenterRecorder;
+            } catch (presenterError) {
+                console.error('Presenter recorder init failed:', presenterError);
+            }
+        }
+
+        if (listenerStream && listenerStream !== speakerStream) {
+            try {
+                const audienceRecorder = new MediaRecorder(listenerStream, { mimeType: 'video/webm;codecs=vp9,opus' });
+                audienceRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) audienceChunksRef.current.push(event.data);
+                };
+                audienceRecorder.start();
+                audienceRecorderRef.current = audienceRecorder;
+            } catch (audienceError) {
+                console.error('Audience recorder init failed:', audienceError);
+            }
+        }
 
         setLiveTranscript('Recording in progress...');
 
@@ -520,7 +579,21 @@ const App: React.FC = () => {
     }
   }, [transcriptionHistory, stopMediaProcessing, slides, questions]);
   
+  const uploadVideoIfAvailable = useCallback(
+    async (role: 'presenter' | 'audience', chunks: Blob[], startMs: number, durationMs: number) => {
+      if (chunks.length === 0) {
+        return;
+      }
+      const videoBlob = new Blob(chunks, { type: 'video/webm' });
+      await uploadSessionVideo(sessionId, role, videoBlob, startMs, durationMs);
+    },
+    [sessionId]
+  );
+
   const handleStopPresentation = useCallback(async () => {
+    const sessionStart = recordingStartRef.current;
+    const durationMs = sessionStart > 0 ? Date.now() - sessionStart : 0;
+
     setStatus(SessionStatus.PROCESSING);
     stopMediaProcessing();
     await flushPendingTranscriptions();
@@ -533,6 +606,26 @@ const App: React.FC = () => {
       return;
     }
 
+    try {
+      await uploadVideoIfAvailable('presenter', presenterChunksRef.current, 0, durationMs);
+      await uploadVideoIfAvailable('audience', audienceChunksRef.current, 0, durationMs);
+      setIsAnalysisPending(true);
+      pollSessionAnalysis(sessionId)
+        .then((analysis) => {
+          setEngagementAnalysis(analysis);
+        })
+        .catch((analysisError) => {
+          console.error('Analysis polling failed:', analysisError);
+          setError(analysisError instanceof Error ? analysisError.message : 'Engagement analysis unavailable.');
+        })
+        .finally(() => {
+          setIsAnalysisPending(false);
+        });
+    } catch (uploadError) {
+      console.error('Video upload failed:', uploadError);
+      setError(uploadError instanceof Error ? uploadError.message : 'Unable to upload session videos.');
+    }
+
     setTranscriptionHistory(cleanedHistory);
     setLiveTranscript(cleanedHistory.map((entry) => entry.text).join('\n'));
 
@@ -541,7 +634,7 @@ const App: React.FC = () => {
     setQuestions(generatedQuestions);
 
     await handleFinishQAndA(generatedQuestions, cleanedHistory);
-  }, [stopMediaProcessing, flushPendingTranscriptions, generateQuestions, slides, handleFinishQAndA]);
+  }, [stopMediaProcessing, flushPendingTranscriptions, generateQuestions, slides, handleFinishQAndA, uploadVideoIfAvailable, sessionId]);
   
   const processFile = async (file: File) => {
     if (file && file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation") {
@@ -584,7 +677,12 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (status) {
       case SessionStatus.COMPLETE:
-        return <FeedbackCard feedback={feedback} />;
+        return (
+          <div className="w-full grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+            <FeedbackCard feedback={feedback} />
+            <EngagementDashboard analysis={engagementAnalysis} isPending={isAnalysisPending} />
+          </div>
+        );
       case SessionStatus.LISTENING: {
         const [hours = '00', minutes = '00', seconds = '00'] = elapsedTime.split(':');
 

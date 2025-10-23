@@ -55,14 +55,14 @@ const FeedbackCard: React.FC<{ feedback: PresentationFeedback | null }> = ({ fee
               </div>
             </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 flex-1 w-full">
+          <div className="flex flex-wrap gap-3 flex-1 w-full justify-start">
             {scoreEntries.map(([category, score]) => (
               <div
                 key={category}
-                className="bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3 flex flex-col gap-1 min-w-0 shadow-sm"
+                className="bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3 flex flex-col gap-1 shadow-sm min-w-[150px]"
               >
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{scoreLabels[category]}</span>
-                <div className="flex items-baseline gap-2">
+                <div className="flex items-baseline gap-2 flex-wrap">
                   <span className="text-2xl font-bold text-slate-100">{score.toFixed(1)}</span>
                   <span className={`text-xs px-2 py-0.5 rounded-full ${getScoreColor(score)}`}>{getScoreDescriptor(score)}</span>
                 </div>

@@ -27,18 +27,12 @@ const collectRecorderChunks = (
     }
   });
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import {
-  SessionStatus,
-  TranscriptionEntry,
-  PresentationFeedback,
-  SessionEngagementAnalysis,
-} from './types';
+import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types';
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
-import EngagementDashboard from './components/EngagementDashboard';
 import { getFinalPresentationFeedback, generateQuestions, transcribeAudioChunk } from './services/openaiService';
-import { uploadSessionVideo, pollSessionAnalysis } from './services/sessionService';
+import { uploadSessionVideo } from './services/sessionService';
 import { parsePptx } from './utils/pptxParser';
 
 const getFrameAsBase64 = (videoEl: HTMLVideoElement, canvasEl: HTMLCanvasElement): string | null => {
@@ -123,8 +117,6 @@ const App: React.FC = () => {
   const audienceRecorderRef = useRef<MediaRecorder | null>(null);
   const presenterChunksRef = useRef<Blob[]>([]);
   const audienceChunksRef = useRef<Blob[]>([]);
-  const [engagementAnalysis, setEngagementAnalysis] = useState<SessionEngagementAnalysis | null>(null);
-  const [isAnalysisPending, setIsAnalysisPending] = useState<boolean>(false);
   const [sessionId] = useState<string>(() => crypto.randomUUID());
 
   useEffect(() => {
@@ -419,8 +411,6 @@ const App: React.FC = () => {
     setElapsedTime('00:00:00');
     recordingStartRef.current = 0;
     lastChunkTimestampRef.current = 0;
-    setEngagementAnalysis(null);
-    setIsAnalysisPending(false);
   };
 
   const handleStart = useCallback(async () => {
@@ -673,18 +663,7 @@ const App: React.FC = () => {
     try {
       await uploadVideoIfAvailable('presenter', presenterChunks, 0, durationMs);
       await uploadVideoIfAvailable('audience', audienceChunks, 0, durationMs);
-      setIsAnalysisPending(true);
-      pollSessionAnalysis(sessionId)
-        .then((analysis) => {
-          setEngagementAnalysis(analysis);
-        })
-        .catch((analysisError) => {
-          console.error('Analysis polling failed:', analysisError);
-          setError(analysisError instanceof Error ? analysisError.message : 'Engagement analysis unavailable.');
-        })
-        .finally(() => {
-          setIsAnalysisPending(false);
-        });
+
     } catch (uploadError) {
       console.error('Video upload failed:', uploadError);
       setError(uploadError instanceof Error ? uploadError.message : 'Unable to upload session videos.');
@@ -738,12 +717,7 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (status) {
       case SessionStatus.COMPLETE:
-        return (
-          <div className="w-full grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-            <FeedbackCard feedback={feedback} />
-            <EngagementDashboard analysis={engagementAnalysis} isPending={isAnalysisPending} />
-          </div>
-        );
+        return <FeedbackCard feedback={feedback} />;
       case SessionStatus.LISTENING: {
         const [hours = '00', minutes = '00', seconds = '00'] = elapsedTime.split(':');
 

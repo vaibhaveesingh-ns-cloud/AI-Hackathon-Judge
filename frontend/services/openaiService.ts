@@ -147,36 +147,6 @@ export interface TranscriptionResponse {
   segments: TranscriptionSegment[];
 }
 
-export const transcribeAudioChunk = async (
-  audioBlob: Blob,
-  startMs = 0,
-  durationMs = 0,
-  preferredExtension?: string
-): Promise<TranscriptionResponse> => {
-  const { extension } = normalizeAudioMimeType(audioBlob.type);
-  const effectiveExtension = preferredExtension || extension;
-  const formData = new FormData();
-  formData.append('file', audioBlob, `chunk.${effectiveExtension}`);
-  formData.append('start_ms', String(startMs));
-  formData.append('duration_ms', String(durationMs));
-
-  const response = await fetch(resolveBackendUrl('/transcribe'), {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Transcription request failed (${response.status}): ${detail}`);
-  }
-
-  const data: any = await response.json();
-  const text = typeof data?.text === 'string' ? data.text.trim() : '';
-  const segmentsArray = Array.isArray(data?.segments) ? data.segments : [];
-
-  return {
-    text,
-    segments: cleanSegments(segmentsArray),
   };
 };
 

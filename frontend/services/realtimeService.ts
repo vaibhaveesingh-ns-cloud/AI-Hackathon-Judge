@@ -94,6 +94,7 @@ const emitTranscription = (
   }
 
   callback(combined, options);
+  callback(orderedUnique.join(''), options);
   return true;
 };
 

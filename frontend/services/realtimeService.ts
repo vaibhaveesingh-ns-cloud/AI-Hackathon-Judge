@@ -82,6 +82,18 @@ const emitTranscription = (
     return false;
   }
 
+  const combined = orderedUnique
+    .map((fragment) => fragment.trim())
+    .filter((fragment) => fragment.length > 0)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!combined) {
+    return false;
+  }
+
+  callback(combined, options);
   callback(orderedUnique.join(''), options);
   return true;
 };

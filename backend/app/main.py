@@ -39,6 +39,7 @@ REALTIME_SESSION_ENDPOINT = "https://api.openai.com/v1/realtime/sessions"
 REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 REALTIME_SESSION_MAX_ATTEMPTS = 3
 REALTIME_CONNECTIVITY_TEST_URL = "https://api.openai.com/v1/models?limit=1"
+REALTIME_LANGUAGE = os.getenv("OPENAI_REALTIME_LANGUAGE", "").strip()
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 logger = logging.getLogger(__name__)
@@ -136,9 +137,11 @@ def create_app() -> FastAPI:
             "input_audio_transcription": {
                 "model": REALTIME_MODEL,
                 "prompt": "",
-                "language": "",
             },
         }
+
+        if REALTIME_LANGUAGE:
+            payload["input_audio_transcription"]["language"] = REALTIME_LANGUAGE
 
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(REALTIME_SESSION_ENDPOINT, headers=headers, json=payload)

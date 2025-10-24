@@ -16,6 +16,76 @@ interface RealtimeCallbacks {
 const PCM_BLOCK_SIZE = 4096;
 const COMMIT_INTERVAL_MS = 400;
 
+const TEXT_FIELDS = ['text', 'output_text', 'transcript'] as const;
+
+const collectTextFragments = (source: unknown): string[] => {
+  if (typeof source === 'string') {
+    return source.trim() ? [source] : [];
+  }
+
+  if (Array.isArray(source)) {
+    return source.flatMap((item) => collectTextFragments(item));
+  }
+
+  if (source && typeof source === 'object') {
+    const record = source as Record<string, unknown>;
+    const fragments: string[] = [];
+
+    TEXT_FIELDS.forEach((key) => {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) {
+        fragments.push(value);
+      }
+    });
+
+    const nestedKeys = ['content', 'delta', 'chunks', 'parts', 'output', 'alternatives', 'values'];
+    nestedKeys.forEach((key) => {
+      const value = record[key];
+      if (value !== undefined) {
+        fragments.push(...collectTextFragments(value));
+      }
+    });
+
+    return fragments;
+  }
+
+  return [];
+};
+
+const emitTranscription = (
+  callback: TranscriptionCallback | undefined,
+  source: unknown,
+  options?: { isFinal?: boolean }
+): boolean => {
+  if (!callback) return false;
+
+  const fragments = collectTextFragments(source);
+  if (fragments.length === 0) {
+    return false;
+  }
+
+  // Avoid emitting duplicates when the payload contains the same text in multiple fields
+  const seen = new Set<string>();
+  const orderedUnique = fragments.filter((fragment) => {
+    const normalized = fragment.trim();
+    if (!normalized) {
+      return false;
+    }
+    if (seen.has(normalized)) {
+      return false;
+    }
+    seen.add(normalized);
+    return true;
+  });
+
+  if (orderedUnique.length === 0) {
+    return false;
+  }
+
+  callback(orderedUnique.join(''), options);
+  return true;
+};
+
 const clampSample = (value: number): number => {
   const clamped = Math.max(-1, Math.min(1, value));
   return clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
@@ -200,42 +270,22 @@ export class RealtimeTranscriptionClient {
       const payload = JSON.parse(payloadText);
       const type = payload?.type;
       if (type === 'transcription.delta') {
-        const text = payload?.delta?.text;
-        if (typeof text === 'string' && text.length > 0) {
-          this.callbacks.onTranscription?.(text);
+        if (emitTranscription(this.callbacks.onTranscription, payload?.delta)) {
+          return;
         }
-        return;
       }
       if (type === 'transcription.completed') {
-        const text = payload?.transcription?.text;
-        if (typeof text === 'string' && text.length > 0) {
-          this.callbacks.onTranscription?.(text, { isFinal: true });
+        if (emitTranscription(this.callbacks.onTranscription, payload?.transcription, { isFinal: true })) {
+          return;
         }
-        return;
       }
       if (type === 'response.delta') {
-        const deltas = payload?.delta;
-        if (Array.isArray(deltas)) {
-          const fragments: string[] = [];
-          deltas.forEach((item) => {
-            if (item?.type === 'transcript.delta' && typeof item?.delta?.text === 'string') {
-              fragments.push(item.delta.text);
-            }
-            if (item?.type === 'output_text.delta' && typeof item?.delta?.text === 'string') {
-              fragments.push(item.delta.text);
-            }
-          });
-          if (fragments.length > 0) {
-            this.callbacks.onTranscription?.(fragments.join(''));
-          }
+        if (emitTranscription(this.callbacks.onTranscription, payload?.delta)) {
+          return;
         }
-        return;
       }
       if (type === 'response.completed') {
-        const text = payload?.response?.output_text;
-        if (typeof text === 'string' && text.length > 0) {
-          this.callbacks.onTranscription?.(text, { isFinal: true });
-        }
+        emitTranscription(this.callbacks.onTranscription, payload?.response, { isFinal: true });
       }
     } catch (error) {
       this.callbacks.onError?.(error instanceof Error ? error : new Error('Realtime payload parse error'));

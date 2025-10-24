@@ -147,9 +147,6 @@ export interface TranscriptionResponse {
   segments: TranscriptionSegment[];
 }
 
-  };
-};
-
 export const generateQuestions = async (
   transcriptionHistory: TranscriptionEntry[],
   slideTexts: string[]

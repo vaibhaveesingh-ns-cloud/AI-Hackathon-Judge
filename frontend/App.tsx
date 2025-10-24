@@ -4,7 +4,7 @@ import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
 import { getFinalPresentationFeedback, generateQuestions } from './services/openaiService';
-import { SpeechRecognitionController } from './services/speechRecognitionService';
+import { SpeechRecognitionController, flushPendingTranscriptions } from './services/speechRecognitionService';
 import { uploadSessionVideo } from './services/sessionService';
 import { parsePptx } from './utils/pptxParser';
 

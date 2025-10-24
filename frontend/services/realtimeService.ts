@@ -1,4 +1,5 @@
 import { resolveBackendUrl } from './openaiService';
+import workletModuleUrl from './pcmWorkletProcessor.js?url';
 
 type TranscriptionCallback = (text: string, options?: { isFinal?: boolean }) => void;
 
@@ -49,8 +50,8 @@ export class RealtimeTranscriptionClient {
   private ws: WebSocket | null = null;
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
-  private processorNode: ScriptProcessorNode | null = null;
   private gainNode: GainNode | null = null;
+  private workletNode: AudioWorkletNode | null = null;
   private callbacks: RealtimeCallbacks = {};
   private commitTimer: number | null = null;
   private appendSinceCommit = false;
@@ -67,13 +68,14 @@ export class RealtimeTranscriptionClient {
     if (!tokenResponse.ok) {
       throw new Error(`Failed to obtain realtime token (${tokenResponse.status})`);
     }
-    const { token } = await tokenResponse.json();
-    if (!token) {
-      throw new Error('Realtime token payload missing token field');
+    const tokenPayload = await tokenResponse.json();
+    const tokenValue = typeof tokenPayload?.token === 'string' ? tokenPayload.token : tokenPayload?.token?.value;
+    if (!tokenValue) {
+      throw new Error('Realtime token payload missing token value');
     }
 
     const wsUrl = new URL(toWebSocketUrl('/realtime/ws'));
-    wsUrl.searchParams.set('token', token);
+    wsUrl.searchParams.set('token', tokenValue);
 
     this.ws = new WebSocket(wsUrl.toString());
     this.ws.binaryType = 'arraybuffer';
@@ -106,15 +108,15 @@ export class RealtimeTranscriptionClient {
       this.commitTimer = null;
     }
 
-    if (this.processorNode) {
-      this.processorNode.disconnect();
-      this.processorNode.onaudioprocess = null;
-      this.processorNode = null;
-    }
-
     if (this.sourceNode) {
       this.sourceNode.disconnect();
       this.sourceNode = null;
+    }
+
+    if (this.workletNode) {
+      this.workletNode.port.onmessage = null;
+      this.workletNode.disconnect();
+      this.workletNode = null;
     }
 
     if (this.gainNode) {
@@ -138,27 +140,32 @@ export class RealtimeTranscriptionClient {
   private async configureAudioPipeline(stream: MediaStream): Promise<void> {
     const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
     const audioContext = new AudioContextCtor({ sampleRate: 16000 });
+    await audioContext.resume();
     const source = audioContext.createMediaStreamSource(stream);
-    const processor = audioContext.createScriptProcessor(PCM_BLOCK_SIZE, 1, 1);
     const gain = audioContext.createGain();
     gain.gain.value = 0;
 
-    processor.onaudioprocess = (event) => {
-      const channelData = event.inputBuffer.getChannelData(0);
-      const pcm = new Int16Array(channelData.length);
-      for (let i = 0; i < channelData.length; i += 1) {
-        pcm[i] = clampSample(channelData[i]);
+    let workletUrl: string | URL = workletModuleUrl;
+    if (import.meta.env.DEV) {
+      workletUrl = new URL('./pcmWorkletProcessor.ts?url', import.meta.url);
+    }
+    await audioContext.audioWorklet.addModule(workletUrl);
+    const workletNode = new AudioWorkletNode(audioContext, 'pcm-encoder-processor');
+    workletNode.port.onmessage = (event: MessageEvent) => {
+      const pcmBuffer = event?.data?.pcm;
+      if (pcmBuffer instanceof ArrayBuffer) {
+        console.debug('[realtime] pcm chunk', (pcmBuffer.byteLength / 2));
+        this.sendPcmChunk(new Int16Array(pcmBuffer));
       }
-      this.sendPcmChunk(pcm);
     };
 
-    source.connect(processor);
-    processor.connect(gain);
+    source.connect(workletNode);
+    workletNode.connect(gain);
     gain.connect(audioContext.destination);
 
     this.audioContext = audioContext;
     this.sourceNode = source;
-    this.processorNode = processor;
+    this.workletNode = workletNode;
     this.gainNode = gain;
   }
 
@@ -199,18 +206,33 @@ export class RealtimeTranscriptionClient {
     try {
       const payload = JSON.parse(payloadText);
       const type = payload?.type;
-      if (type === 'transcription.delta') {
-        const text = payload?.delta?.text;
+
+      const emitPartial = (text: unknown) => {
         if (typeof text === 'string' && text.length > 0) {
           this.callbacks.onTranscription?.(text);
         }
-        return;
-      }
-      if (type === 'transcription.completed') {
-        const text = payload?.transcription?.text;
+      };
+
+      const emitFinal = (text: unknown) => {
         if (typeof text === 'string' && text.length > 0) {
           this.callbacks.onTranscription?.(text, { isFinal: true });
         }
+      };
+
+      if (type === 'transcription.delta') {
+        emitPartial(payload?.delta?.text);
+        return;
+      }
+      if (type === 'transcription.completed') {
+        emitFinal(payload?.transcription?.text);
+        return;
+      }
+      if (type === 'response.output_text.delta') {
+        emitPartial(payload?.delta);
+        return;
+      }
+      if (type === 'response.output_text.done') {
+        emitFinal(payload?.output_text ?? payload?.response?.output_text);
         return;
       }
       if (type === 'response.delta') {
@@ -226,17 +248,21 @@ export class RealtimeTranscriptionClient {
             }
           });
           if (fragments.length > 0) {
-            this.callbacks.onTranscription?.(fragments.join(''));
+            emitPartial(fragments.join(''));
+            return;
           }
         }
-        return;
       }
       if (type === 'response.completed') {
-        const text = payload?.response?.output_text;
-        if (typeof text === 'string' && text.length > 0) {
-          this.callbacks.onTranscription?.(text, { isFinal: true });
-        }
+        emitFinal(payload?.response?.output_text ?? payload?.response?.output?.[0]?.content?.[0]?.text);
+        return;
       }
+      if (type === 'response.created' && payload?.response?.output_text) {
+        emitPartial(payload.response.output_text);
+        return;
+      }
+
+      emitPartial(payload?.text ?? payload?.delta?.text);
     } catch (error) {
       this.callbacks.onError?.(error instanceof Error ? error : new Error('Realtime payload parse error'));
     }

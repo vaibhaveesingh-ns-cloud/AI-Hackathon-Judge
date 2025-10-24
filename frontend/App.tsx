@@ -527,6 +527,7 @@ const App: React.FC = () => {
         }
 
         speakerStreamRef.current = speakerStream;
+        (window as unknown as Record<string, unknown>).debugSpeakerStream = speakerStream;
         listenerStreamRef.current = listenerStream;
 
         attachStreamToVideo(speakerVideoRef.current, speakerStreamRef.current);

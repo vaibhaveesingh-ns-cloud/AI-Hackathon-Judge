@@ -3,7 +3,8 @@ import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
-import { getFinalPresentationFeedback, generateQuestions, transcribeAudioChunk } from './services/openaiService';
+import { getFinalPresentationFeedback, generateQuestions } from './services/openaiService';
+import { SpeechRecognitionController } from './services/speechRecognitionService';
 import { uploadSessionVideo } from './services/sessionService';
 import { parsePptx } from './utils/pptxParser';
 
@@ -68,8 +69,8 @@ const getMediaErrorMessage = (err: unknown): string => {
 
 const FRAME_CAPTURE_INTERVAL = 5000; // Capture a frame every 5 seconds
 const AUDIO_CHUNK_DURATION_MS = 4000;
-const MIN_AUDIO_CHUNK_BYTES = 64 * 1024; // Prevent flushing container headers alone
-const HUNK_DURATION_MS = 5000;
+const MIN_AUDIO_CHUNK_BYTES = 32 * 1024;
+const HUNK_DURATION_MS = 4500;
 const AUDIO_MIME_CANDIDATES = [
   { mimeType: 'audio/webm;codecs=opus', extension: 'webm' },
   { mimeType: 'audio/webm', extension: 'webm' },
@@ -101,6 +102,7 @@ const App: React.FC = () => {
 
   const [transcriptionHistory, setTranscriptionHistory] = useState<TranscriptionEntry[]>([]);
   const [liveTranscript, setLiveTranscript] = useState<string>('');
+  const [liveRealtimeTranscript, setLiveRealtimeTranscript] = useState<string>('');
   const [feedback, setFeedback] = useState<PresentationFeedback | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasMediaPermissions, setHasMediaPermissions] = useState(false);
@@ -132,8 +134,8 @@ const App: React.FC = () => {
   const speakerFrameIntervalRef = useRef<number | null>(null);
   const listenerFrameIntervalRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechRecognitionRef = useRef<SpeechRecognitionController | null>(null);
   const transcriptionHistoryRef = useRef<TranscriptionEntry[]>([]);
-  const pendingTranscriptionsRef = useRef<Set<Promise<void>>>(new Set());
   const recordingStartRef = useRef<number>(0);
   const lastChunkTimestampRef = useRef<number>(0);
   const audioBufferRef = useRef<Blob[]>([]);
@@ -151,84 +153,44 @@ const App: React.FC = () => {
     transcriptionHistoryRef.current = transcriptionHistory;
   }, [transcriptionHistory]);
 
-  const flushPendingTranscriptions = useCallback(async () => {
-    while (pendingTranscriptionsRef.current.size > 0) {
-      const pending = Array.from(pendingTranscriptionsRef.current);
-      await Promise.allSettled(pending);
-    }
+  useEffect(() => {
+    return () => {
+      speechRecognitionRef.current?.stop();
+      speechRecognitionRef.current = null;
+    };
   }, []);
 
-  const queueTranscription = useCallback(
-    (audioBlob: Blob, startOffsetMs: number, durationMs: number) => {
-      const transcriptionPromise = transcribeAudioChunk(audioBlob, startOffsetMs, durationMs, audioExtensionRef.current)
-        .then(({ text, segments }) => {
-          if (text) {
-            setLiveTranscript((prev) => `${prev}\n${text}`.trim());
-          }
-
-          if (segments.length > 0) {
-            setTranscriptionHistory((prev) => {
-              const updated = [...prev];
-              segments.forEach((segment) => {
-                updated.push({
-                  speaker: 'user',
-                  text: segment.text,
-                  context: 'presentation',
-                  startMs: segment.startMs,
-                  endMs: segment.endMs,
-                });
-              });
-              return updated;
-            });
-          }
-        })
-        .catch((err) => {
-          console.error('Chunk transcription failed:', err);
-        });
-
-      pendingTranscriptionsRef.current.add(transcriptionPromise);
-      transcriptionPromise.finally(() => {
-        pendingTranscriptionsRef.current.delete(transcriptionPromise);
-      });
-    },
-    [setLiveTranscript, setTranscriptionHistory]
-  );
-
-  const sendBufferedAudio = useCallback(
-    (force = false) => {
-      if (audioBufferRef.current.length === 0) return;
-      if (!force && audioBufferSizeRef.current < MIN_AUDIO_CHUNK_BYTES) {
+  const appendTranscript = useCallback(
+    (text: string, context: 'presentation' | 'q&a') => {
+      const cleaned = text.trim();
+      if (!cleaned) {
         return;
       }
-
-      const absoluteStart = audioBufferStartRef.current ?? lastChunkTimestampRef.current;
-      const chunkEnd = Date.now();
-      const durationMs = Math.max(chunkEnd - absoluteStart, 1);
-
-      const combinedBlob = new Blob(audioBufferRef.current, { type: audioMimeTypeRef.current });
-      if (combinedBlob.size === 0) {
-        console.warn('[mediaRecorder] combined blob had zero size, skipping upload');
-        return;
-      }
-
-      console.debug('[mediaRecorder] sending buffered audio', {
-        bufferedChunks: audioBufferRef.current.length,
-        combinedSize: combinedBlob.size,
-        durationMs,
-        force,
-        mimeType: audioMimeTypeRef.current,
+      setLiveRealtimeTranscript((prev) => {
+        const merged = `${prev}\n${cleaned}`.trim();
+        return merged;
       });
-
-      audioBufferRef.current = [];
-      audioBufferSizeRef.current = 0;
-      audioBufferStartRef.current = null;
-      lastChunkTimestampRef.current = chunkEnd;
-
-      const relativeStart = absoluteStart - recordingStartRef.current;
-      queueTranscription(combinedBlob, relativeStart, durationMs);
+      setLiveTranscript((prev) => {
+        const merged = `${prev}\n${cleaned}`.trim();
+        return merged;
+      });
+      setTranscriptionHistory((prev) => [
+        ...prev,
+        {
+          speaker: 'user',
+          text: cleaned,
+          context,
+        },
+      ]);
     },
-    [queueTranscription]
+    []
   );
+
+  const sendBufferedAudio = useCallback(() => {
+    audioBufferRef.current = [];
+    audioBufferSizeRef.current = 0;
+    audioBufferStartRef.current = null;
+  }, []);
 
   const formatCameraLabel = (device: MediaDeviceInfo, index: number) =>
     device.label || `Camera ${index + 1}`;
@@ -425,7 +387,11 @@ const App: React.FC = () => {
     stopStream(speakerStreamRef, speakerFrameIntervalRef, speakerVideoRef);
     stopStream(listenerStreamRef, listenerFrameIntervalRef, listenerVideoRef);
 
-    sendBufferedAudio(true);
+    sendBufferedAudio();
+
+    speechRecognitionRef.current?.stop();
+    speechRecognitionRef.current = null;
+    setLiveRealtimeTranscript('');
 
     if (mediaRecorderRef.current) {
       try {
@@ -504,6 +470,7 @@ const App: React.FC = () => {
     setFeedback(null);
     setTranscriptionHistory([]);
     setLiveTranscript('');
+    setLiveRealtimeTranscript('');
     speakerVideoFramesRef.current = [];
     listenerVideoFramesRef.current = [];
     presenterChunksRef.current = [];
@@ -524,6 +491,7 @@ const App: React.FC = () => {
     setFeedback(null);
     setTranscriptionHistory([]);
     setLiveTranscript('');
+    setLiveRealtimeTranscript('');
     speakerVideoFramesRef.current = [];
     listenerVideoFramesRef.current = [];
     setCurrentSlide(0);
@@ -581,6 +549,29 @@ const App: React.FC = () => {
         }
 
         const audioStream = new MediaStream(audioTracks);
+
+        speechRecognitionRef.current?.stop();
+        speechRecognitionRef.current = null;
+        setLiveRealtimeTranscript('');
+        const speechController = new SpeechRecognitionController();
+        speechRecognitionRef.current = speechController;
+        speechController
+            .start({
+                stream: audioStream,
+                onPartial: (text) => {
+                    setLiveRealtimeTranscript(text);
+                },
+                onFinal: (text) => {
+                    appendTranscript(text, 'presentation');
+                },
+                onError: (speechError) => {
+                    console.error('Speech recognition error:', speechError);
+                },
+            })
+            .catch((speechStartError) => {
+                console.error('Speech recognition start failed:', speechStartError);
+            });
+
         try {
             let preferredFormat = DEFAULT_AUDIO_MIME;
             if (typeof MediaRecorder.isTypeSupported === 'function') {
@@ -608,21 +599,27 @@ const App: React.FC = () => {
                     return;
                 }
 
-                const { size, type } = event.data;
-                console.debug('[mediaRecorder] buffering audio chunk', {
-                    size,
-                    type,
-                    recorderMime: audioMimeTypeRef.current,
-                });
+                const chunkEnd = Date.now();
 
                 if (audioBufferStartRef.current === null) {
                     audioBufferStartRef.current = lastChunkTimestampRef.current;
                 }
 
-                audioBufferRef.current.push(event.data);
-                audioBufferSizeRef.current += event.data.size;
+                const normalizedChunk = event.data.type
+                    ? event.data
+                    : event.data.slice(0, event.data.size, audioMimeTypeRef.current);
+
+                audioBufferRef.current.push(normalizedChunk);
+                audioBufferSizeRef.current += normalizedChunk.size;
+
+                console.debug('[mediaRecorder] buffering audio chunk', {
+                    size: normalizedChunk.size,
+                    type: normalizedChunk.type || audioMimeTypeRef.current,
+                    bufferedChunks: audioBufferRef.current.length,
+                });
 
                 sendBufferedAudio();
+                lastChunkTimestampRef.current = chunkEnd;
             };
             recorder.start(AUDIO_CHUNK_DURATION_MS);
             mediaRecorderRef.current = recorder;
@@ -671,7 +668,7 @@ const App: React.FC = () => {
         setStatus(SessionStatus.ERROR);
         stopMediaProcessing();
     }
-  }, [requestMediaStream, stopMediaProcessing, attachStreamToVideo, startFrameCapture, selectedSpeakerCamera, selectedListenerCamera]);
+  }, [requestMediaStream, stopMediaProcessing, attachStreamToVideo, startFrameCapture, selectedSpeakerCamera, selectedListenerCamera, appendTranscript]);
 
   const handleFinishQAndA = useCallback(async (
     providedQuestions?: string[],
@@ -719,8 +716,6 @@ const App: React.FC = () => {
 
     setStatus(SessionStatus.PROCESSING);
     stopMediaProcessing();
-    await flushPendingTranscriptions();
-
     let workingHistory = transcriptionHistoryRef.current.filter((entry) => entry.context === 'presentation');
 
     if (workingHistory.length === 0) {
@@ -733,12 +728,18 @@ const App: React.FC = () => {
             context: 'presentation' as const,
           },
         ];
-        setLiveTranscript('Live transcript unavailable. Using slide content as fallback for analysis.');
+        const fallbackMessage = 'Live transcript unavailable. Using slide content as fallback for analysis.';
+        setLiveTranscript(fallbackMessage);
+        setLiveRealtimeTranscript(fallbackMessage);
       } else {
-        setLiveTranscript('Live transcript unavailable. Proceeding with video-only analysis.');
+        const fallbackMessage = 'Live transcript unavailable. Proceeding with video-only analysis.';
+        setLiveTranscript(fallbackMessage);
+        setLiveRealtimeTranscript(fallbackMessage);
       }
     } else {
-      setLiveTranscript(workingHistory.map((entry) => entry.text).join('\n'));
+      const joined = workingHistory.map((entry) => entry.text).join('\n');
+      setLiveTranscript(joined);
+      setLiveRealtimeTranscript(joined);
     }
 
     setTranscriptionHistory(workingHistory);
@@ -990,7 +991,9 @@ const App: React.FC = () => {
                       </div>
                     ))}
                   <p className="text-indigo-200/80 text-sm leading-relaxed font-medium">
-                    {liveTranscript || 'Recording in progress...'}
+                    {status === SessionStatus.LISTENING
+                      ? liveRealtimeTranscript || liveTranscript || 'Recording in progress...'
+                      : liveTranscript || liveRealtimeTranscript || 'Transcript will appear once available.'}
                   </p>
                 </div>
               </section>

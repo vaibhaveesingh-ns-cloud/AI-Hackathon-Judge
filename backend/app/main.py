@@ -35,7 +35,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip()
 REALTIME_MODEL = os.getenv("OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
-REALTIME_SESSION_ENDPOINT = "https://api.openai.com/v1/realtime/transcription_sessions"
+REALTIME_SESSION_ENDPOINT = "https://api.openai.com/v1/realtime/sessions"
 REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 REALTIME_SESSION_MAX_ATTEMPTS = 3
 REALTIME_CONNECTIVITY_TEST_URL = "https://api.openai.com/v1/models?limit=1"
@@ -259,36 +259,44 @@ def create_app() -> FastAPI:
 
         cleanup_paths = [src_path]
 
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as dst_file:
-                dst_path = Path(dst_file.name)
-            cleanup_paths.append(dst_path)
+        if original_suffix != ".webm":
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as dst_file:
+                    dst_path = Path(dst_file.name)
+                cleanup_paths.append(dst_path)
 
-            (
-                ffmpeg
-                .input(str(src_path))
-                .output(
-                    str(dst_path),
-                    ac=1,
-                    ar=16000,
-                    acodec="pcm_s16le",
-                    format="wav",
+                (
+                    ffmpeg
+                    .input(str(src_path))
+                    .output(
+                        str(dst_path),
+                        ac=1,
+                        ar=16000,
+                        acodec="pcm_s16le",
+                        format="wav",
+                    )
+                    .overwrite_output()
+                    .run(cmd="ffmpeg", quiet=True)
                 )
-                .overwrite_output()
-                .run(cmd="ffmpeg", quiet=True)
-            )
 
-            if dst_path.exists() and dst_path.stat().st_size > 0:
-                processed_bytes = dst_path.read_bytes()
-                processed_filename = Path(filename).with_suffix(".wav").name
+                if dst_path.exists() and dst_path.stat().st_size > 0:
+                    processed_bytes = dst_path.read_bytes()
+                    processed_filename = Path(filename).with_suffix(".wav").name
+                else:
+                    raise RuntimeError("ffmpeg produced empty wav output")
+            except Exception as conversion_error:  # pragma: no cover - diagnostic logging only
+                logger.warning("[transcribe] audio conversion failed: %s", conversion_error)
+                processed_bytes = audio_bytes
+                processed_filename = filename
             else:
-                raise RuntimeError("ffmpeg produced empty wav output")
-        except Exception as conversion_error:  # pragma: no cover - diagnostic logging only
-            logger.warning("[transcribe] audio conversion failed: %s", conversion_error)
+                src_path.unlink(missing_ok=True)
+                cleanup_paths = cleanup_paths[1:]
+            finally:
+                for path in cleanup_paths:
+                    path.unlink(missing_ok=True)
+        else:
             processed_bytes = audio_bytes
             processed_filename = filename
-        finally:
-            src_path.unlink(missing_ok=True)
 
         if not processed_bytes:
             raise HTTPException(status_code=400, detail="Converted audio clip is empty.")
@@ -306,12 +314,6 @@ def create_app() -> FastAPI:
                 )
             finally:
                 buf.close()
-
-        try:
-            for path in cleanup_paths[1:]:
-                path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
         try:
             transcription = await asyncio.to_thread(run_transcription)

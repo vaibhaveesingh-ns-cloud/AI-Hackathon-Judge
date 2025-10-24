@@ -13,7 +13,8 @@
     "jszip": "^3.10.1",
     "openai": "^6.3.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "typecheck": "^0.1.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

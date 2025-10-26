@@ -184,7 +184,7 @@ def create_app() -> FastAPI:
         }
 
         try:
-            async with websockets.connect(REALTIME_WS_URL, extra_headers=headers, max_size=None) as upstream:
+            async with websockets.connect(REALTIME_WS_URL, additional_headers=headers, max_size=None) as upstream:
                 async def _forward_client_to_openai() -> None:
                     while True:
                         try:

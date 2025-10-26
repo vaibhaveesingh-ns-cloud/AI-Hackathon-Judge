@@ -8,6 +8,45 @@ import { SpeechRecognitionController, flushPendingTranscriptions } from './servi
 import { uploadSessionVideo } from './services/sessionService';
 import { parsePptx } from './utils/pptxParser';
 
+type LiveTranscriptItem = {
+  id: string;
+  timestampLabel: string;
+  text: string;
+  occurredAt: number;
+  isSystem?: boolean;
+};
+
+const generateTranscriptId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const formatTimestampLabel = (milliseconds: number): string => {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
+const createLiveTranscriptItem = (
+  text: string,
+  baseTimestamp: number | null,
+  options: { isSystem?: boolean; occurredAt?: number } = {}
+): LiveTranscriptItem => {
+  const { isSystem = false, occurredAt = Date.now() } = options;
+  const reference = typeof baseTimestamp === 'number' ? baseTimestamp : occurredAt;
+  const relativeMs = Math.max(0, occurredAt - reference);
+  return {
+    id: generateTranscriptId(),
+    timestampLabel: formatTimestampLabel(relativeMs),
+    text,
+    occurredAt,
+    isSystem,
+  };
+};
+
 const collectRecorderChunks = (
   recorder: MediaRecorder | null,
   chunks: Blob[],
@@ -103,6 +142,7 @@ const App: React.FC = () => {
   const [transcriptionHistory, setTranscriptionHistory] = useState<TranscriptionEntry[]>([]);
   const [liveTranscript, setLiveTranscript] = useState<string>('');
   const [liveRealtimeTranscript, setLiveRealtimeTranscript] = useState<string>('');
+  const [liveTranscriptItems, setLiveTranscriptItems] = useState<LiveTranscriptItem[]>([]);
   const [feedback, setFeedback] = useState<PresentationFeedback | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hasMediaPermissions, setHasMediaPermissions] = useState(false);
@@ -148,6 +188,7 @@ const App: React.FC = () => {
   const presenterChunksRef = useRef<Blob[]>([]);
   const audienceChunksRef = useRef<Blob[]>([]);
   const [sessionId] = useState<string>(() => crypto.randomUUID());
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     transcriptionHistoryRef.current = transcriptionHistory;
@@ -160,30 +201,82 @@ const App: React.FC = () => {
     };
   }, []);
 
+  const resolveSessionStart = useCallback((): number | null => {
+    if (typeof listeningStartTime === 'number') {
+      return listeningStartTime;
+    }
+    if (recordingStartRef.current > 0) {
+      return recordingStartRef.current;
+    }
+    return null;
+  }, [listeningStartTime]);
+
+  const recordLiveTranscript = useCallback(
+    (text: string, options: { occurredAt?: number; isSystem?: boolean } = {}) => {
+      const cleaned = text.trim();
+      if (!cleaned) {
+        return null;
+      }
+      const occurredAt = options.occurredAt ?? Date.now();
+      const baseTimestamp = resolveSessionStart();
+      const item = createLiveTranscriptItem(cleaned, baseTimestamp, {
+        occurredAt,
+        isSystem: options.isSystem ?? false,
+      });
+      setLiveTranscriptItems((prev) => [...prev.slice(-99), item]);
+      setLiveTranscript((prev) => (prev ? `${prev}\n${cleaned}` : cleaned));
+      return item;
+    },
+    [resolveSessionStart]
+  );
+
+  const resetLiveTranscript = useCallback(() => {
+    setLiveTranscript('');
+    setLiveRealtimeTranscript('');
+    setLiveTranscriptItems([]);
+  }, []);
+
   const appendTranscript = useCallback(
     (text: string, context: 'presentation' | 'q&a') => {
       const cleaned = text.trim();
       if (!cleaned) {
         return;
       }
-      setLiveRealtimeTranscript((prev) => {
-        const merged = `${prev}\n${cleaned}`.trim();
-        return merged;
-      });
-      setLiveTranscript((prev) => {
-        const merged = `${prev}\n${cleaned}`.trim();
-        return merged;
-      });
+
+      const occurredAt = Date.now();
+      const baseStart = resolveSessionStart();
+      const startMs = typeof baseStart === 'number' ? Math.max(0, occurredAt - baseStart) : 0;
+      const approximateDuration = Math.max(cleaned.split(/\s+/).length * 320, 1_500);
+      const endMs = startMs + approximateDuration;
+
       setTranscriptionHistory((prev) => [
         ...prev,
         {
           speaker: 'user',
           text: cleaned,
           context,
+          startMs,
+          endMs,
         },
       ]);
+
+      recordLiveTranscript(cleaned, { occurredAt });
+      setLiveRealtimeTranscript('');
     },
-    []
+    [recordLiveTranscript, resolveSessionStart]
+  );
+
+  useEffect(() => {
+    const container = transcriptContainerRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [liveTranscriptItems, liveRealtimeTranscript]);
+
+  const addSystemTranscriptMessage = useCallback(
+    (text: string, options: { occurredAt?: number } = {}) => {
+      recordLiveTranscript(text, { occurredAt: options.occurredAt, isSystem: true });
+    },
+    [recordLiveTranscript]
   );
 
   const sendBufferedAudio = useCallback(() => {
@@ -469,8 +562,7 @@ const App: React.FC = () => {
     setError(null);
     setFeedback(null);
     setTranscriptionHistory([]);
-    setLiveTranscript('');
-    setLiveRealtimeTranscript('');
+    resetLiveTranscript();
     speakerVideoFramesRef.current = [];
     listenerVideoFramesRef.current = [];
     presenterChunksRef.current = [];
@@ -490,8 +582,7 @@ const App: React.FC = () => {
     setError(null);
     setFeedback(null);
     setTranscriptionHistory([]);
-    setLiveTranscript('');
-    setLiveRealtimeTranscript('');
+    resetLiveTranscript();
     speakerVideoFramesRef.current = [];
     listenerVideoFramesRef.current = [];
     setCurrentSlide(0);
@@ -982,20 +1073,42 @@ const App: React.FC = () => {
                   <i className="fas fa-wave-square text-indigo-400 text-xl"></i>
                 </div>
                 <div className="flex-1 overflow-y-auto pr-2 space-y-3 text-left">
-                  {transcriptionHistory
-                    .filter((entry) => entry.context === 'presentation')
-                    .slice(-20)
-                    .map((entry, index) => (
-                      <div key={index} className="text-sm leading-relaxed text-slate-300">
-                        <span className="text-indigo-300/90 font-mono text-xs mr-2">{String(index + 1).padStart(2, '0')}</span>
-                        {entry.text}
+                  {liveTranscriptItems.length === 0 && (
+                    <div className="bg-slate-950/40 border border-dashed border-slate-700/70 rounded-2xl px-4 py-6 text-sm text-slate-500 text-center">
+                      Live captions will appear here once the presentation starts.
+                    </div>
+                  )}
+                  {liveTranscriptItems.slice(-30).map((entry) => (
+                    <div
+                      key={entry.id}
+                      className={`rounded-2xl px-4 py-3 border transition-colors shadow-inner ${
+                        entry.isSystem
+                          ? 'bg-slate-900/80 border-slate-800 text-slate-400 italic'
+                          : 'bg-slate-950/60 border-slate-800/60 text-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs font-mono uppercase tracking-wide text-indigo-300/90">
+                          {entry.timestampLabel}
+                        </span>
+                        {!entry.isSystem && (
+                          <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-slate-500">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400/80 animate-pulse"></span>
+                            Spoken
+                          </span>
+                        )}
                       </div>
-                    ))}
-                  <p className="text-indigo-200/80 text-sm leading-relaxed font-medium">
-                    {status === SessionStatus.LISTENING
-                      ? liveRealtimeTranscript || liveTranscript || 'Recording in progress...'
-                      : liveTranscript || liveRealtimeTranscript || 'Transcript will appear once available.'}
-                  </p>
+                      <p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap break-words">{entry.text}</p>
+                    </div>
+                  ))}
+                  {status === SessionStatus.LISTENING && liveRealtimeTranscript && (
+                    <div className="rounded-2xl px-4 py-3 border border-indigo-500/40 bg-indigo-500/10 text-indigo-100 shadow-inner animate-pulse">
+                      <div className="text-xs font-mono uppercase tracking-wide text-indigo-300">Live</div>
+                      <p className="mt-1 text-sm leading-relaxed whitespace-pre-wrap break-words">
+                        {liveRealtimeTranscript}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </section>
             </div>

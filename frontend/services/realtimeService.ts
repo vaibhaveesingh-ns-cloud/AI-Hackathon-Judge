@@ -150,11 +150,12 @@ export class RealtimeTranscriptionClient {
       workletUrl = new URL('./pcmWorkletProcessor.ts?url', import.meta.url);
     }
     await audioContext.audioWorklet.addModule(workletUrl);
+    console.log('[realtime] worklet module loaded', workletUrl.toString());
     const workletNode = new AudioWorkletNode(audioContext, 'pcm-encoder-processor');
     workletNode.port.onmessage = (event: MessageEvent) => {
       const pcmBuffer = event?.data?.pcm;
       if (pcmBuffer instanceof ArrayBuffer) {
-        console.debug('[realtime] pcm chunk', (pcmBuffer.byteLength / 2));
+        console.log('[realtime] pcm block bytes', pcmBuffer.byteLength);
         this.sendPcmChunk(new Int16Array(pcmBuffer));
       }
     };
@@ -173,6 +174,7 @@ export class RealtimeTranscriptionClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
+    console.log('[realtime] sending chunk', pcm.byteLength);
     const base64 = arrayBufferToBase64(pcm.buffer);
     this.ws.send(
       JSON.stringify({

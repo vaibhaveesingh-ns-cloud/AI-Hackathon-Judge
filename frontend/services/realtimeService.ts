@@ -15,7 +15,8 @@ interface RealtimeCallbacks {
 }
 
 const PCM_BLOCK_SIZE = 4096;
-const COMMIT_INTERVAL_MS = 400;
+const COMMIT_INTERVAL_MS = 600;
+const MIN_COMMIT_SAMPLES = 3200; // 200ms of 16kHz mono audio
 
 const clampSample = (value: number): number => {
   const clamped = Math.max(-1, Math.min(1, value));
@@ -55,12 +56,15 @@ export class RealtimeTranscriptionClient {
   private callbacks: RealtimeCallbacks = {};
   private commitTimer: number | null = null;
   private appendSinceCommit = false;
+  private pendingSamplesSinceCommit = 0;
 
   async start(stream: MediaStream, callbacks: RealtimeCallbacks = {}): Promise<void> {
     this.callbacks = callbacks;
     if (this.ws) {
       this.stop();
     }
+    this.pendingSamplesSinceCommit = 0;
+    this.appendSinceCommit = false;
 
     const tokenResponse = await fetch(resolveBackendUrl('/realtime/token'), {
       method: 'POST',
@@ -107,6 +111,8 @@ export class RealtimeTranscriptionClient {
       window.clearTimeout(this.commitTimer);
       this.commitTimer = null;
     }
+    this.pendingSamplesSinceCommit = 0;
+    this.appendSinceCommit = false;
 
     if (this.sourceNode) {
       this.sourceNode.disconnect();
@@ -175,6 +181,7 @@ export class RealtimeTranscriptionClient {
       return;
     }
     console.log('[realtime] sending chunk', pcm.byteLength);
+    this.pendingSamplesSinceCommit += pcm.length;
     const base64 = arrayBufferToBase64(pcm.buffer);
     this.ws.send(
       JSON.stringify({
@@ -198,9 +205,13 @@ export class RealtimeTranscriptionClient {
       if (!this.appendSinceCommit) {
         return;
       }
+      if (this.pendingSamplesSinceCommit < MIN_COMMIT_SAMPLES) {
+        this.scheduleCommit();
+        return;
+      }
       this.appendSinceCommit = false;
+      this.pendingSamplesSinceCommit = 0;
       this.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-      this.ws.send(JSON.stringify({ type: 'response.create' }));
     }, COMMIT_INTERVAL_MS);
   }
 
@@ -208,6 +219,7 @@ export class RealtimeTranscriptionClient {
     try {
       const payload = JSON.parse(payloadText);
       const type = payload?.type;
+      console.log('[realtime] event', type ?? '(unknown)', payload);
 
       const emitPartial = (text: unknown) => {
         if (typeof text === 'string' && text.length > 0) {
@@ -229,42 +241,25 @@ export class RealtimeTranscriptionClient {
         emitFinal(payload?.transcription?.text);
         return;
       }
-      if (type === 'response.output_text.delta') {
+      if (type === 'response.audio_transcript.delta') {
         emitPartial(payload?.delta);
         return;
       }
-      if (type === 'response.output_text.done') {
-        emitFinal(payload?.output_text ?? payload?.response?.output_text);
+      if (type === 'response.audio_transcript.done') {
+        emitFinal(payload?.transcript ?? payload?.audio_transcript?.text ?? payload?.delta);
         return;
       }
-      if (type === 'response.delta') {
-        const deltas = payload?.delta;
-        if (Array.isArray(deltas)) {
-          const fragments: string[] = [];
-          deltas.forEach((item) => {
-            if (item?.type === 'transcript.delta' && typeof item?.delta?.text === 'string') {
-              fragments.push(item.delta.text);
-            }
-            if (item?.type === 'output_text.delta' && typeof item?.delta?.text === 'string') {
-              fragments.push(item.delta.text);
-            }
-          });
-          if (fragments.length > 0) {
-            emitPartial(fragments.join(''));
-            return;
-          }
-        }
-      }
-      if (type === 'response.completed') {
-        emitFinal(payload?.response?.output_text ?? payload?.response?.output?.[0]?.content?.[0]?.text);
+      if (type === 'error') {
+        this.callbacks.onError?.(
+          new Error(
+            typeof payload?.error?.message === 'string'
+              ? payload.error.message
+              : 'Realtime service reported an error'
+          )
+        );
         return;
       }
-      if (type === 'response.created' && payload?.response?.output_text) {
-        emitPartial(payload.response.output_text);
-        return;
-      }
-
-      emitPartial(payload?.text ?? payload?.delta?.text);
+      // Ignore unrelated event types to avoid showing model refusals or tool output.
     } catch (error) {
       this.callbacks.onError?.(error instanceof Error ? error : new Error('Realtime payload parse error'));
     }

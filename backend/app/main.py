@@ -134,6 +134,11 @@ def create_app() -> FastAPI:
         }
         payload = {
             "model": REALTIME_SESSION_MODEL,
+            "instructions": (
+                "You are a realtime transcription engine that listens to live presentation audio "
+                "and returns accurate transcripts. Do not generate commentary, filler, or random "
+                "text—only deliver the words that are spoken."
+            ),
             "input_audio_format": "pcm16",
             "turn_detection": {
                 "type": "server_vad",
@@ -144,6 +149,10 @@ def create_app() -> FastAPI:
             "input_audio_transcription": {
                 "model": REALTIME_TRANSCRIBE_MODEL,
                 "language": "en",
+                "instructions": (
+                    "Provide verbatim realtime transcripts of the presentation audio. "
+                    "Avoid paraphrasing or inventing words."
+                ),
             },
         }
 

@@ -233,20 +233,48 @@ export class RealtimeTranscriptionClient {
         }
       };
 
-      if (type === 'transcription.delta') {
-        emitPartial(payload?.delta?.text);
+      if (
+        type === 'transcription.delta' ||
+        type === 'conversation.item.input_audio_transcription.delta'
+      ) {
+        const deltaText =
+          typeof payload?.delta?.text === 'string'
+            ? payload.delta.text
+            : typeof payload?.delta === 'string'
+              ? payload.delta
+              : typeof payload?.text === 'string'
+                ? payload.text
+                : undefined;
+        emitPartial(deltaText);
         return;
       }
-      if (type === 'transcription.completed') {
-        emitFinal(payload?.transcription?.text);
+      if (
+        type === 'transcription.completed' ||
+        type === 'conversation.item.input_audio_transcription.completed'
+      ) {
+        const transcriptText =
+          typeof payload?.transcription?.text === 'string'
+            ? payload.transcription.text
+            : typeof payload?.transcription === 'string'
+              ? payload.transcription
+              : typeof payload?.transcript === 'string'
+                ? payload.transcript
+                : typeof payload?.text === 'string'
+                  ? payload.text
+                  : undefined;
+        emitFinal(transcriptText);
         return;
       }
-      if (type === 'response.audio_transcript.delta') {
-        emitPartial(payload?.delta);
+      if (type === 'conversation.item.input_audio_transcription.failed') {
+        const errorMessage =
+          typeof payload?.error?.message === 'string'
+            ? payload.error.message
+            : 'Realtime transcription failed for the current audio segment';
+        this.callbacks.onError?.(new Error(errorMessage));
         return;
       }
-      if (type === 'response.audio_transcript.done') {
-        emitFinal(payload?.transcript ?? payload?.audio_transcript?.text ?? payload?.delta);
+      if (type === 'response.audio_transcript.delta' || type === 'response.audio_transcript.done') {
+        // Ignore model-generated audio transcript events which describe assistant output.
         return;
       }
       if (type === 'error') {

@@ -34,7 +34,12 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip()
-REALTIME_MODEL = os.getenv("OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
+REALTIME_TRANSCRIBE_MODEL = os.getenv("OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
+REALTIME_SESSION_MODEL = (
+    os.getenv("OPENAI_REALTIME_SESSION_MODEL", REALTIME_TRANSCRIBE_MODEL).strip()
+    if REALTIME_TRANSCRIBE_MODEL
+    else "gpt-4o-mini-transcribe"
+)
 REALTIME_SESSION_ENDPOINT = "https://api.openai.com/v1/realtime/sessions"
 REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 REALTIME_SESSION_MAX_ATTEMPTS = 3
@@ -117,7 +122,9 @@ def create_app() -> FastAPI:
     async def _create_realtime_session_token() -> dict[str, object]:
         if openai_client is None:
             raise HTTPException(status_code=500, detail="OpenAI API key is not configured on the server.")
-        if not REALTIME_MODEL:
+        if not REALTIME_SESSION_MODEL:
+            raise HTTPException(status_code=500, detail="Realtime session model is not configured on the server.")
+        if not REALTIME_TRANSCRIBE_MODEL:
             raise HTTPException(status_code=500, detail="Realtime transcription model is not configured on the server.")
 
         headers = {
@@ -126,7 +133,7 @@ def create_app() -> FastAPI:
             "OpenAI-Beta": "realtime=v1",
         }
         payload = {
-            "model": REALTIME_MODEL,
+            "model": REALTIME_SESSION_MODEL,
             "input_audio_format": "pcm16",
             "turn_detection": {
                 "type": "server_vad",
@@ -135,13 +142,10 @@ def create_app() -> FastAPI:
                 "silence_duration_ms": 500,
             },
             "input_audio_transcription": {
-                "model": REALTIME_MODEL,
-                "prompt": "",
+                "model": REALTIME_TRANSCRIBE_MODEL,
+                "language": "en",
             },
         }
-
-        if REALTIME_LANGUAGE:
-            payload["input_audio_transcription"]["language"] = REALTIME_LANGUAGE
 
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(REALTIME_SESSION_ENDPOINT, headers=headers, json=payload)
@@ -213,10 +217,18 @@ def create_app() -> FastAPI:
                             if websocket.application_state == WebSocketState.CONNECTED:
                                 await websocket.close()
                             break
+                        if websocket.application_state != WebSocketState.CONNECTED:
+                            break
                         if isinstance(payload, bytes):
-                            await websocket.send_bytes(payload)
+                            try:
+                                await websocket.send_bytes(payload)
+                            except RuntimeError:
+                                break
                         else:
-                            await websocket.send_text(payload)
+                            try:
+                                await websocket.send_text(payload)
+                            except RuntimeError:
+                                break
 
                 await asyncio.gather(_forward_client_to_openai(), _forward_openai_to_client())
         except InvalidStatusCode as exc:

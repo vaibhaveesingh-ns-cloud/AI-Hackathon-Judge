@@ -591,7 +591,13 @@ const App: React.FC = () => {
 
     try {
         const speakerConstraints: MediaStreamConstraints = {
-            audio: true,
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 16000,
+                channelCount: 1
+            },
             video: selectedSpeakerCamera
                 ? { deviceId: { exact: selectedSpeakerCamera } }
                 : true,

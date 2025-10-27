@@ -16,6 +16,9 @@ const activeControllers = new Set<SpeechRecognitionController>();
 export class SpeechRecognitionController {
   private client: RealtimeTranscriptionClient | null = null;
   private partialBuffer = '';
+  private accumulatedTranscript = '';
+  private lastFinalTime = 0;
+  private sentenceTimeout: NodeJS.Timeout | null = null;
   private onPartial?: PartialCallback;
   private onFinal?: FinalCallback;
   private onError?: ErrorCallback;
@@ -23,6 +26,8 @@ export class SpeechRecognitionController {
   async start({ stream, onPartial, onFinal, onError }: StartOptions): Promise<void> {
     this.stop();
     this.partialBuffer = '';
+    this.accumulatedTranscript = '';
+    this.lastFinalTime = 0;
     this.onPartial = onPartial;
     this.onFinal = onFinal;
     this.onError = onError;
@@ -39,9 +44,36 @@ export class SpeechRecognitionController {
           if (options?.isFinal) {
             const trimmed = text.trim();
             if (trimmed.length > 0) {
-              this.onFinal?.(trimmed);
-            } else {
-              this.flush();
+              // Accumulate the final chunk
+              if (this.accumulatedTranscript.length > 0) {
+                this.accumulatedTranscript += ' ';
+              }
+              this.accumulatedTranscript += trimmed;
+              
+              // Clear any existing timeout
+              if (this.sentenceTimeout) {
+                clearTimeout(this.sentenceTimeout);
+              }
+              
+              // Check if this looks like a complete sentence
+              const endsWithPunctuation = /[.!?]$/.test(trimmed);
+              const timeSinceLastFinal = Date.now() - this.lastFinalTime;
+              
+              if (endsWithPunctuation || timeSinceLastFinal > 2000) {
+                // It's a complete sentence or there's been a long pause
+                this.onFinal?.(this.accumulatedTranscript);
+                this.accumulatedTranscript = '';
+              } else {
+                // Wait for more chunks to form a complete sentence
+                this.sentenceTimeout = setTimeout(() => {
+                  if (this.accumulatedTranscript.length > 0) {
+                    this.onFinal?.(this.accumulatedTranscript);
+                    this.accumulatedTranscript = '';
+                  }
+                }, 1500); // Wait 1.5 seconds for more chunks
+              }
+              
+              this.lastFinalTime = Date.now();
             }
             this.partialBuffer = '';
             return;
@@ -50,7 +82,11 @@ export class SpeechRecognitionController {
           this.partialBuffer += text;
           const cleaned = this.partialBuffer.trim();
           if (cleaned.length > 0) {
-            this.onPartial?.(cleaned);
+            // Show accumulated + partial for live preview
+            const preview = this.accumulatedTranscript.length > 0 
+              ? this.accumulatedTranscript + ' ' + cleaned 
+              : cleaned;
+            this.onPartial?.(preview);
           }
         },
         onError: (error) => {
@@ -70,23 +106,33 @@ export class SpeechRecognitionController {
   }
 
   stop(): void {
+    this.flush();
     if (this.client) {
       this.client.stop();
       this.client = null;
     }
     activeControllers.delete(this);
-    this.partialBuffer = '';
-    this.onPartial = undefined;
-    this.onFinal = undefined;
-    this.onError = undefined;
   }
 
   flush(): void {
-    const cleaned = this.partialBuffer.trim();
-    if (cleaned.length > 0) {
-      this.onFinal?.(cleaned);
-      this.partialBuffer = '';
+    // Clear any pending timeout
+    if (this.sentenceTimeout) {
+      clearTimeout(this.sentenceTimeout);
+      this.sentenceTimeout = null;
     }
+    
+    // Flush any accumulated transcript
+    if (this.accumulatedTranscript.length > 0) {
+      this.onFinal?.(this.accumulatedTranscript);
+      this.accumulatedTranscript = '';
+    } else {
+      // If no accumulated transcript, flush the partial buffer
+      const cleaned = this.partialBuffer.trim();
+      if (cleaned.length > 0) {
+        this.onFinal?.(cleaned);
+      }
+    }
+    this.partialBuffer = '';
   }
 }
 

@@ -14,9 +14,9 @@ interface RealtimeCallbacks {
   onError?: ErrorCallback;
 }
 
-const PCM_BLOCK_SIZE = 4096;
-const COMMIT_INTERVAL_MS = 600;
-const MIN_COMMIT_SAMPLES = 3200; // 200ms of 16kHz mono audio
+const PCM_BLOCK_SIZE = 8192;  // Larger block size for more stable processing
+const COMMIT_INTERVAL_MS = 800;  // Slightly longer interval for better sentence grouping
+const MIN_COMMIT_SAMPLES = 4800; // 300ms of 16kHz mono audio - ensure enough audio before committing
 
 const clampSample = (value: number): number => {
   const clamped = Math.max(-1, Math.min(1, value));
@@ -192,8 +192,22 @@ export class RealtimeTranscriptionClient {
     const audioContext = new AudioContextCtor({ sampleRate: 16000 });
     await audioContext.resume();
     const source = audioContext.createMediaStreamSource(stream);
+    
+    // Add noise suppression and echo cancellation
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8;
+    
+    // Create a compressor to normalize audio levels
+    const compressor = audioContext.createDynamicsCompressor();
+    compressor.threshold.value = -30;
+    compressor.knee.value = 30;
+    compressor.ratio.value = 12;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.25;
+    
     const gain = audioContext.createGain();
-    gain.gain.value = 0;
+    gain.gain.value = 1.2;  // Slightly boost the gain for clearer audio
 
     // AudioWorklet must load JavaScript, not TypeScript
     const workletUrl = new URL(workletModuleUrl, import.meta.url);
@@ -208,7 +222,11 @@ export class RealtimeTranscriptionClient {
       }
     };
 
-    source.connect(workletNode);
+    // Connect audio processing chain:
+    // source -> analyser -> compressor -> worklet -> gain -> destination
+    source.connect(analyser);
+    analyser.connect(compressor);
+    compressor.connect(workletNode);
     workletNode.connect(gain);
     gain.connect(audioContext.destination);
 
@@ -222,11 +240,16 @@ export class RealtimeTranscriptionClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    console.log('[realtime] sending audio chunk', pcm.byteLength);
+    console.log('[realtime] sending audio chunk', pcm.byteLength, 'bytes,', pcm.length, 'samples');
     this.pendingSamplesSinceCommit += pcm.length;
     
     // Send audio as base64 to OpenAI Realtime API
-    const base64 = arrayBufferToBase64(pcm.buffer);
+    // Create a new ArrayBuffer from the Int16Array to ensure proper alignment
+    const buffer = new ArrayBuffer(pcm.length * 2);
+    const view = new Int16Array(buffer);
+    view.set(pcm);
+    
+    const base64 = arrayBufferToBase64(buffer);
     this.ws.send(
       JSON.stringify({
         type: 'input_audio_buffer.append',
@@ -250,9 +273,11 @@ export class RealtimeTranscriptionClient {
         return;
       }
       if (this.pendingSamplesSinceCommit < MIN_COMMIT_SAMPLES) {
+        console.log('[realtime] Not enough samples to commit:', this.pendingSamplesSinceCommit, 'vs required', MIN_COMMIT_SAMPLES);
         this.scheduleCommit();
         return;
       }
+      console.log('[realtime] Committing audio buffer with', this.pendingSamplesSinceCommit, 'samples');
       this.appendSinceCommit = false;
       this.pendingSamplesSinceCommit = 0;
       this.sendCommand('commit');
@@ -269,7 +294,8 @@ export class RealtimeTranscriptionClient {
     if (command === 'reset') {
       realtimeCommand = 'input_audio_buffer.clear';
     } else if (command === 'finalize') {
-      realtimeCommand = 'input_audio_buffer.clear';
+      // Don't clear on finalize, just stop sending
+      return;
     } else if (command === 'commit') {
       realtimeCommand = 'input_audio_buffer.commit';
     } else {

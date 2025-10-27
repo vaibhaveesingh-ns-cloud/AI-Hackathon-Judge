@@ -7,6 +7,7 @@ import type {
   ResponseOutputMessage,
 } from 'openai/resources/responses/responses';
 import { PresentationFeedback, ScoreBreakdown, ScoreReasons, TranscriptionEntry } from '../types';
+import { analyzeTranscript, generateTranscriptInsights } from './transcriptAnalysisService';
 import finalFeedbackPromptTemplate from '../prompts/finalFeedbackPrompt.txt?raw';
 import { getOpenAIApiKey } from '../utils/getOpenAIApiKey';
 
@@ -202,6 +203,10 @@ export const getFinalPresentationFeedback = async (
   const transcriptWordCount = presentationTranscript.trim()
     ? presentationTranscript.trim().split(/\s+/).length
     : 0;
+  
+  // Analyze transcript for detailed metrics
+  const transcriptAnalysis = analyzeTranscript(transcriptionHistory, 'presentation');
+  const transcriptInsights = generateTranscriptInsights(transcriptAnalysis);
 
   const presenterEvidenceFrames = presenterFrames.filter(
     (frame) => typeof frame === 'string' && frame.trim().length > 0
@@ -239,10 +244,28 @@ export const getFinalPresentationFeedback = async (
     ? slideTexts.map((text, i) => `Slide ${i + 1}:\n${text}`).join('\n\n')
     : 'No slides were provided.';
 
+  // Add transcript analysis to the prompt
+  const transcriptMetrics = `
+TRANSCRIPT ANALYSIS:
+- Total Words: ${transcriptAnalysis.totalWords}
+- Speaking Duration: ${Math.round(transcriptAnalysis.speakingDuration)} seconds
+- Words Per Minute: ${Math.round(transcriptAnalysis.wordsPerMinute)}
+- Filler Words: ${transcriptAnalysis.fillerWordCount}
+- Clarity Score: ${Math.round(transcriptAnalysis.clarityScore)}%
+- Coherence Score: ${Math.round(transcriptAnalysis.coherenceScore)}%
+- Vocabulary Richness: ${(transcriptAnalysis.vocabularyRichness * 100).toFixed(1)}%
+- Key Topics: ${transcriptAnalysis.keyTopics.slice(0, 5).join(', ')}
+- Technical Terms Used: ${transcriptAnalysis.technicalTermsUsed.join(', ')}
+
+TRANSCRIPT INSIGHTS:
+${transcriptInsights.join('\n')}
+`;
+
   const prompt = finalFeedbackPromptTemplate
     .replace('{{PRESENTATION_TRANSCRIPT}}', presentationTranscript)
     .replace('{{SLIDE_CONTENT}}', slideContent)
-    .replace('{{QUESTIONS_SECTION}}', derivedQuestions.length > 0 ? derivedQuestions.join('\n\n') : 'No Q&A session was held.');
+    .replace('{{QUESTIONS_SECTION}}', derivedQuestions.length > 0 ? derivedQuestions.join('\n\n') : 'No Q&A session was held.')
+    + '\n\n' + transcriptMetrics;
 
   const userMessage: ResponseInputItem.Message = {
     role: 'user',

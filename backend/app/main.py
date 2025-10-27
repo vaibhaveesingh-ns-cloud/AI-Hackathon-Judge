@@ -173,21 +173,27 @@ def create_app() -> FastAPI:
         payload = {
             "model": REALTIME_SESSION_MODEL,
             "instructions": (
-                "You are a realtime transcription engine that listens to live presentation audio "
-                "and returns accurate transcripts. Do not generate commentary, filler, or random "
-                "text—only deliver the words that are spoken."
+                "You are a high-accuracy transcription assistant. Your task is to transcribe "
+                "spoken English accurately. Focus on: "
+                "1. Capturing complete sentences and thoughts "
+                "2. Maintaining context between phrases "
+                "3. Correctly identifying technical terms and proper nouns "
+                "4. Preserving the speaker's actual words without interpretation"
             ),
             "input_audio_format": "pcm16",
+            "output_audio_format": "pcm16",
             "turn_detection": {
                 "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 500,
+                "threshold": 0.5,  # Lower threshold for better speech detection
+                "prefix_padding_ms": 300,  # Balanced padding
+                "silence_duration_ms": 1000,  # Wait longer before cutting off
             },
-            # Enable transcription with just the model
+            # Enable transcription with model and language
             "input_audio_transcription": {
-                "model": "whisper-1"
-            }
+                "model": "whisper-1",
+                "language": "en"  # Explicitly set to English
+            },
+            "temperature": 0.6  # Minimum temperature for Realtime API
         }
         
         # Add language if specified

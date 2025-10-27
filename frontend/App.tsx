@@ -27,6 +27,7 @@ const formatTimestampLabel = (milliseconds: number): string => {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
+  // Format as MM:SS to match the image style
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 };
 
@@ -1068,11 +1069,11 @@ const App: React.FC = () => {
                 <div className="flex items-center justify-between mb-4">
                   <div>
                     <h3 className="text-lg font-semibold text-slate-100">Live Transcription</h3>
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Automated captions</p>
+                    <p className="text-xs uppercase tracking-wide text-slate-500">Real-time captions</p>
                   </div>
-                  <i className="fas fa-wave-square text-indigo-400 text-xl"></i>
+                  <i className="fas fa-microphone text-indigo-400 text-xl"></i>
                 </div>
-                <div className="flex-1 overflow-y-auto pr-2 space-y-3 text-left">
+                <div className="flex-1 overflow-y-auto pr-2 space-y-2 text-left" ref={transcriptContainerRef}>
                   {liveTranscriptItems.length === 0 && (
                     <div className="bg-slate-950/40 border border-dashed border-slate-700/70 rounded-2xl px-4 py-6 text-sm text-slate-500 text-center">
                       Live captions will appear here once the presentation starts.
@@ -1081,31 +1082,29 @@ const App: React.FC = () => {
                   {liveTranscriptItems.slice(-30).map((entry) => (
                     <div
                       key={entry.id}
-                      className={`rounded-2xl px-4 py-3 border transition-colors shadow-inner ${
+                      className={`rounded-xl px-4 py-3 transition-colors ${
                         entry.isSystem
-                          ? 'bg-slate-900/80 border-slate-800 text-slate-400 italic'
-                          : 'bg-slate-950/60 border-slate-800/60 text-slate-200'
+                          ? 'bg-slate-900/60 border border-slate-800/50 text-slate-400 italic'
+                          : 'bg-transparent'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-xs font-mono uppercase tracking-wide text-indigo-300/90">
+                      <p className="text-sm leading-relaxed">
+                        <span className="font-mono text-xs text-blue-500 font-semibold mr-3">
                           {entry.timestampLabel}
                         </span>
-                        {!entry.isSystem && (
-                          <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-slate-500">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400/80 animate-pulse"></span>
-                            Spoken
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap break-words">{entry.text}</p>
+                        <span className="text-slate-200 whitespace-pre-wrap break-words">{entry.text}</span>
+                      </p>
                     </div>
                   ))}
                   {status === SessionStatus.LISTENING && liveRealtimeTranscript && (
-                    <div className="rounded-2xl px-4 py-3 border border-indigo-500/40 bg-indigo-500/10 text-indigo-100 shadow-inner animate-pulse">
-                      <div className="text-xs font-mono uppercase tracking-wide text-indigo-300">Live</div>
-                      <p className="mt-1 text-sm leading-relaxed whitespace-pre-wrap break-words">
-                        {liveRealtimeTranscript}
+                    <div className="rounded-xl px-4 py-3 bg-slate-950/30">
+                      <p className="text-sm leading-relaxed">
+                        <span className="font-mono text-xs text-blue-400 font-semibold mr-3 italic">
+                          Live
+                        </span>
+                        <span className="text-slate-300 whitespace-pre-wrap break-words">
+                          {liveRealtimeTranscript}
+                        </span>
                       </p>
                     </div>
                   )}

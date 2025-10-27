@@ -66,25 +66,66 @@ export class RealtimeTranscriptionClient {
     this.pendingSamplesSinceCommit = 0;
     this.appendSinceCommit = false;
 
-    const tokenResponse = await fetch(resolveBackendUrl('/realtime/token'), {
-      method: 'POST',
-    });
-    if (!tokenResponse.ok) {
-      throw new Error(`Failed to obtain realtime token (${tokenResponse.status})`);
-    }
-    const tokenPayload = await tokenResponse.json();
-    const tokenValue = typeof tokenPayload?.token === 'string' ? tokenPayload.token : tokenPayload?.token?.value;
-    if (!tokenValue) {
-      throw new Error('Realtime token payload missing token value');
-    }
-
+    // Use OpenAI Realtime API through the backend proxy
     const wsUrl = new URL(toWebSocketUrl('/realtime/ws'));
-    wsUrl.searchParams.set('token', tokenValue);
+    
+    // Get a token from the backend
+    let token: string;
+    try {
+      console.log('[realtime] Fetching token from:', resolveBackendUrl('/realtime/token'));
+      const response = await fetch(resolveBackendUrl('/realtime/token'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[realtime] Token fetch failed:', response.status, errorText);
+        throw new Error(`Failed to get realtime token: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      console.log('[realtime] Token received:', data);
+      console.log('[realtime] Token type:', typeof data.token);
+      console.log('[realtime] Token value:', data.token);
+      
+      if (!data.token) {
+        // Check if there's an error message from the backend
+        if (data.error) {
+          throw new Error(data.error);
+        }
+        throw new Error('Token not found in response');
+      }
+      
+      // Ensure token is a string
+      token = String(data.token);
+      console.log('[realtime] Token extracted:', token.substring(0, 20) + '...');
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Failed to initialize realtime transcription';
+      console.error('[realtime] Token fetch error:', errorMsg);
+      
+      // Provide user-friendly error message
+      let userMsg = errorMsg;
+      if (errorMsg.includes('OpenAI API key')) {
+        userMsg = 'OpenAI API key is missing. Please check your backend/.env file and ensure OPENAI_API_KEY is set.';
+      } else if (errorMsg.includes('Failed to get realtime token')) {
+        userMsg = 'Unable to connect to backend. Please ensure the backend is running at http://localhost:8000 and your OPENAI_API_KEY is configured.';
+      }
+      
+      this.callbacks.onError?.(new Error(userMsg));
+      throw error;
+    }
 
+    console.log('[realtime] Setting token in URL:', typeof token, token.substring(0, 30) + '...');
+    wsUrl.searchParams.set('token', token);
+    console.log('[realtime] WebSocket URL:', wsUrl.toString().replace(/token=[^&]+/, 'token=***'));
     this.ws = new WebSocket(wsUrl.toString());
     this.ws.binaryType = 'arraybuffer';
 
     this.ws.onopen = () => {
+      // Session configuration is handled by the backend when creating the token
       this.callbacks.onConnected?.();
     };
 
@@ -136,6 +177,9 @@ export class RealtimeTranscriptionClient {
     }
 
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      if (this.ws.readyState === WebSocket.OPEN) {
+        this.sendCommand('finalize');
+      }
       this.ws.close(1000, 'client stop');
     }
     this.ws = null;
@@ -180,8 +224,10 @@ export class RealtimeTranscriptionClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    console.log('[realtime] sending chunk', pcm.byteLength);
+    console.log('[realtime] sending audio chunk', pcm.byteLength);
     this.pendingSamplesSinceCommit += pcm.length;
+    
+    // Send audio as base64 to OpenAI Realtime API
     const base64 = arrayBufferToBase64(pcm.buffer);
     this.ws.send(
       JSON.stringify({
@@ -211,8 +257,32 @@ export class RealtimeTranscriptionClient {
       }
       this.appendSinceCommit = false;
       this.pendingSamplesSinceCommit = 0;
-      this.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+      this.sendCommand('commit');
     }, COMMIT_INTERVAL_MS);
+  }
+
+  private sendCommand(command: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    
+    // Map command types to OpenAI Realtime API commands
+    let realtimeCommand: string;
+    if (command === 'reset') {
+      realtimeCommand = 'input_audio_buffer.clear';
+    } else if (command === 'finalize') {
+      realtimeCommand = 'input_audio_buffer.clear';
+    } else if (command === 'commit') {
+      realtimeCommand = 'response.audio_transcript.done';
+    } else {
+      realtimeCommand = command;
+    }
+    
+    this.ws.send(
+      JSON.stringify({
+        type: realtimeCommand,
+      })
+    );
   }
 
   private handleServerEvent(payloadText: string): void {
@@ -233,10 +303,40 @@ export class RealtimeTranscriptionClient {
         }
       };
 
-      if (
-        type === 'transcription.delta' ||
-        type === 'conversation.item.input_audio_transcription.delta'
-      ) {
+      // Handle OpenAI Realtime API events
+      if (type === 'conversation.item.input_audio_transcription.delta') {
+        const deltaText =
+          typeof payload?.delta === 'string'
+            ? payload.delta
+            : typeof payload?.delta?.transcript === 'string'
+              ? payload.delta.transcript
+              : undefined;
+        emitPartial(deltaText);
+        return;
+      }
+      
+      if (type === 'conversation.item.input_audio_transcription.completed') {
+        const transcriptText =
+          typeof payload?.transcript === 'string'
+            ? payload.transcript
+            : typeof payload?.text === 'string'
+              ? payload.text
+              : undefined;
+        emitFinal(transcriptText);
+        return;
+      }
+      
+      if (type === 'conversation.item.input_audio_transcription.failed') {
+        const errorMessage =
+          typeof payload?.error?.message === 'string'
+            ? payload.error.message
+            : 'Realtime transcription failed for the current audio segment';
+        this.callbacks.onError?.(new Error(errorMessage));
+        return;
+      }
+      
+      // Legacy event types for backward compatibility
+      if (type === 'transcription.delta') {
         const deltaText =
           typeof payload?.delta?.text === 'string'
             ? payload.delta.text
@@ -248,10 +348,8 @@ export class RealtimeTranscriptionClient {
         emitPartial(deltaText);
         return;
       }
-      if (
-        type === 'transcription.completed' ||
-        type === 'conversation.item.input_audio_transcription.completed'
-      ) {
+      
+      if (type === 'transcription.completed') {
         const transcriptText =
           typeof payload?.transcription?.text === 'string'
             ? payload.transcription.text
@@ -265,7 +363,8 @@ export class RealtimeTranscriptionClient {
         emitFinal(transcriptText);
         return;
       }
-      if (type === 'conversation.item.input_audio_transcription.failed') {
+      
+      if (type === 'transcription.failed') {
         const errorMessage =
           typeof payload?.error?.message === 'string'
             ? payload.error.message
@@ -273,10 +372,11 @@ export class RealtimeTranscriptionClient {
         this.callbacks.onError?.(new Error(errorMessage));
         return;
       }
-      if (type === 'response.audio_transcript.delta' || type === 'response.audio_transcript.done') {
-        // Ignore model-generated audio transcript events which describe assistant output.
+      
+      if (type === 'ack' || type === 'session.created' || type === 'session.updated') {
         return;
       }
+      
       if (type === 'error') {
         this.callbacks.onError?.(
           new Error(
@@ -287,7 +387,8 @@ export class RealtimeTranscriptionClient {
         );
         return;
       }
-      // Ignore unrelated event types to avoid showing model refusals or tool output.
+      
+      // Ignore unrelated event types
     } catch (error) {
       this.callbacks.onError?.(error instanceof Error ? error : new Error('Realtime payload parse error'));
     }

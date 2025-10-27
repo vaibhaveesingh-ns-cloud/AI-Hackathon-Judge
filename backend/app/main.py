@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 import asyncio
 import io
@@ -29,23 +29,37 @@ from starlette.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 
 from .analysis_service import run_analysis_and_store
+# Speech2Text is now optional (only needed if SPEECH2TEXT_MODEL env var is set)
+# from .speech2text_service import Speech2TextEngine, TranscriptionResult
 
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip()
 REALTIME_TRANSCRIBE_MODEL = os.getenv("OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
-REALTIME_SESSION_MODEL = (
-    os.getenv("OPENAI_REALTIME_SESSION_MODEL", REALTIME_TRANSCRIBE_MODEL).strip()
-    if REALTIME_TRANSCRIBE_MODEL
-    else "gpt-4o-mini-transcribe"
-)
+if not REALTIME_TRANSCRIBE_MODEL:
+    REALTIME_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
+
+REALTIME_SESSION_MODEL = os.getenv(
+    "OPENAI_REALTIME_SESSION_MODEL",
+    "gpt-4o-realtime-preview-2024-12-17",
+).strip()
+if not REALTIME_SESSION_MODEL:
+    REALTIME_SESSION_MODEL = "gpt-4o-realtime-preview-2024-12-17"
 REALTIME_SESSION_ENDPOINT = "https://api.openai.com/v1/realtime/sessions"
-REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
+REALTIME_WS_URL = (
+    f"wss://api.openai.com/v1/realtime?model={REALTIME_SESSION_MODEL}&intent=transcription"
+)
 REALTIME_SESSION_MAX_ATTEMPTS = 3
 REALTIME_CONNECTIVITY_TEST_URL = "https://api.openai.com/v1/models?limit=1"
 REALTIME_LANGUAGE = os.getenv("OPENAI_REALTIME_LANGUAGE", "").strip()
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+SPEECH2TEXT_MODEL_NAME = os.getenv("SPEECH2TEXT_MODEL", "").strip()
+SPEECH2TEXT_MIN_CHUNK_SECONDS = float(os.getenv("SPEECH2TEXT_MIN_CHUNK_SECONDS", "1.2") or 1.2)
+SPEECH2TEXT_MAX_WINDOW_SECONDS = float(os.getenv("SPEECH2TEXT_MAX_WINDOW_SECONDS", "12.0") or 12.0)
+SPEECH2TEXT_DEVICE = os.getenv("SPEECH2TEXT_DEVICE", "").strip() or None
+SPEECH2TEXT_NUM_BEAMS = int(os.getenv("SPEECH2TEXT_NUM_BEAMS", "1") or 1)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +121,24 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="AI Hackathon Judge API", version="0.1.0", lifespan=lifespan)
 
+    # Speech2Text engine disabled - using OpenAI Realtime API instead
+    # Uncomment below and add transformers to requirements.txt if you need local speech-to-text
+    speech2text_engine: Optional[object] = None
+    # if SPEECH2TEXT_MODEL_NAME:
+    #     try:
+    #         from .speech2text_service import Speech2TextEngine
+    #         speech2text_engine = Speech2TextEngine(
+    #             model_name=SPEECH2TEXT_MODEL_NAME,
+    #             sample_rate=16000,
+    #             min_chunk_seconds=SPEECH2TEXT_MIN_CHUNK_SECONDS,
+    #             max_window_seconds=SPEECH2TEXT_MAX_WINDOW_SECONDS,
+    #             device=SPEECH2TEXT_DEVICE,
+    #             num_beams=SPEECH2TEXT_NUM_BEAMS,
+    #         )
+    #     except Exception:
+    #         logger.exception("Failed to load Speech2Text model '%s'", SPEECH2TEXT_MODEL_NAME)
+    #         speech2text_engine = None
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -132,6 +164,13 @@ def create_app() -> FastAPI:
             "Content-Type": "application/json",
             "OpenAI-Beta": "realtime=v1",
         }
+        # Prepare transcription config - only include language if specified
+        transcription_config = {
+            "model": REALTIME_TRANSCRIBE_MODEL,
+        }
+        if REALTIME_LANGUAGE:
+            transcription_config["language"] = REALTIME_LANGUAGE
+        
         payload = {
             "model": REALTIME_SESSION_MODEL,
             "instructions": (
@@ -146,14 +185,7 @@ def create_app() -> FastAPI:
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": 500,
             },
-            "input_audio_transcription": {
-                "model": REALTIME_TRANSCRIBE_MODEL,
-                "language": "en",
-                "instructions": (
-                    "Provide verbatim realtime transcripts of the presentation audio. "
-                    "Avoid paraphrasing or inventing words."
-                ),
-            },
+            "input_audio_transcription": transcription_config,
         }
 
         async with httpx.AsyncClient(timeout=10) as client:
@@ -167,20 +199,58 @@ def create_app() -> FastAPI:
         client_secret = body.get("client_secret")
         expires_at = body.get("expires_at")
         session_id = body.get("id")
+        
         if not client_secret:
             logger.error("Realtime session response missing client_secret: %s", body)
             raise HTTPException(status_code=502, detail="Realtime session response missing client secret.")
 
+        # Extract token value from the new API response format
+        if isinstance(client_secret, dict):
+            token_value = client_secret.get("value") or client_secret.get("token")
+            expires_at = client_secret.get("expires_at", expires_at)
+            if not token_value:
+                logger.error("Client secret object missing value field: %s", client_secret)
+                raise HTTPException(status_code=502, detail="Invalid client secret format.")
+        else:
+            token_value = client_secret
+
         return {
-            "token": client_secret,
+            "token": token_value,
             "expires_at": expires_at,
             "session_id": session_id,
         }
 
     @app.post("/realtime/token", tags=["transcription"])
     async def get_realtime_token() -> JSONResponse:
-        payload = await _create_realtime_session_token()
-        return JSONResponse(payload)
+        try:
+            payload = await _create_realtime_session_token()
+            return JSONResponse(payload)
+        except HTTPException as e:
+            logger.error("Realtime token creation failed: %s", e.detail)
+            return JSONResponse(
+                status_code=e.status_code,
+                content={"error": e.detail}
+            )
+        except Exception as e:
+            logger.exception("Unexpected error creating realtime token")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Internal server error: {str(e)}"}
+            )
+
+    @app.websocket("/speech2text/ws")
+    async def speech2text_stream(websocket: WebSocket) -> None:
+        # Local Speech2Text endpoint disabled - using OpenAI Realtime API instead
+        await websocket.accept()
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "message": "Local Speech2Text is disabled. Please use the OpenAI Realtime API endpoint at /realtime/ws instead.",
+                }
+            )
+        )
+        await websocket.close(code=1011)
 
     @app.websocket("/realtime/ws")
     async def realtime_proxy(websocket: WebSocket) -> None:

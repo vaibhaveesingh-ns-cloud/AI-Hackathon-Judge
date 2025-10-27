@@ -36,9 +36,9 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip()
-REALTIME_TRANSCRIBE_MODEL = os.getenv("OPENAI_REALTIME_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe").strip()
+REALTIME_TRANSCRIBE_MODEL = os.getenv("OPENAI_REALTIME_TRANSCRIBE_MODEL", "whisper-1").strip()
 if not REALTIME_TRANSCRIBE_MODEL:
-    REALTIME_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
+    REALTIME_TRANSCRIBE_MODEL = "whisper-1"
 
 REALTIME_SESSION_MODEL = os.getenv(
     "OPENAI_REALTIME_SESSION_MODEL",
@@ -47,9 +47,8 @@ REALTIME_SESSION_MODEL = os.getenv(
 if not REALTIME_SESSION_MODEL:
     REALTIME_SESSION_MODEL = "gpt-4o-realtime-preview-2024-12-17"
 REALTIME_SESSION_ENDPOINT = "https://api.openai.com/v1/realtime/sessions"
-REALTIME_WS_URL = (
-    f"wss://api.openai.com/v1/realtime?model={REALTIME_SESSION_MODEL}&intent=transcription"
-)
+# When using sessions API, model is configured in the session, not in the WS URL
+REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
 REALTIME_SESSION_MAX_ATTEMPTS = 3
 REALTIME_CONNECTIVITY_TEST_URL = "https://api.openai.com/v1/models?limit=1"
 REALTIME_LANGUAGE = os.getenv("OPENAI_REALTIME_LANGUAGE", "").strip()
@@ -156,8 +155,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail="OpenAI API key is not configured on the server.")
         if not REALTIME_SESSION_MODEL:
             raise HTTPException(status_code=500, detail="Realtime session model is not configured on the server.")
-        if not REALTIME_TRANSCRIBE_MODEL:
-            raise HTTPException(status_code=500, detail="Realtime transcription model is not configured on the server.")
+        
+        # Log the models being used
+        logger.warning("REALTIME_SESSION_MODEL: %s", REALTIME_SESSION_MODEL)
+        logger.warning("REALTIME_TRANSCRIBE_MODEL: %s (not used in session)", REALTIME_TRANSCRIBE_MODEL)
 
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -165,9 +166,7 @@ def create_app() -> FastAPI:
             "OpenAI-Beta": "realtime=v1",
         }
         # Prepare transcription config - only include language if specified
-        transcription_config = {
-            "model": REALTIME_TRANSCRIBE_MODEL,
-        }
+        transcription_config = {}
         if REALTIME_LANGUAGE:
             transcription_config["language"] = REALTIME_LANGUAGE
         
@@ -185,8 +184,19 @@ def create_app() -> FastAPI:
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": 500,
             },
-            "input_audio_transcription": transcription_config,
+            # Enable transcription with just the model
+            "input_audio_transcription": {
+                "model": "whisper-1"
+            }
         }
+        
+        # Add language if specified
+        if REALTIME_LANGUAGE:
+            payload["input_audio_transcription"]["language"] = REALTIME_LANGUAGE
+        
+        # Log the session creation payload for debugging
+        logger.warning("Creating realtime session with model: %s", REALTIME_SESSION_MODEL)
+        logger.warning("Session payload: %s", json.dumps(payload, indent=2))
 
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(REALTIME_SESSION_ENDPOINT, headers=headers, json=payload)
@@ -298,6 +308,16 @@ def create_app() -> FastAPI:
                             break
                         if websocket.application_state != WebSocketState.CONNECTED:
                             break
+                        
+                        # Log transcription events for debugging
+                        if isinstance(payload, str):
+                            try:
+                                msg = json.loads(payload)
+                                if msg.get("type", "").startswith("conversation.item.input_audio_transcription"):
+                                    logger.info("Transcription event: %s", msg.get("type"))
+                            except:
+                                pass
+                        
                         if isinstance(payload, bytes):
                             try:
                                 await websocket.send_bytes(payload)

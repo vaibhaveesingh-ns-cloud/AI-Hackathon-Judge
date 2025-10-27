@@ -1,17 +1,16 @@
-FROM node:20-alpine AS build
+FROM node:20-alpine
 
 WORKDIR /app
 
+# Copy package files
 COPY frontend/package*.json ./
 RUN npm install --legacy-peer-deps
 
+# Copy all frontend files
 COPY frontend/ ./
-RUN npm run build
 
-FROM nginx:stable-alpine AS production
+# Expose Vite dev server port
+EXPOSE 3000
 
-COPY --from=build /app/dist /usr/share/nginx/html
-
-EXPOSE 5173
-
-CMD ["nginx", "-g", "daemon off;"]
+# Run Vite dev server on all interfaces
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3000"]

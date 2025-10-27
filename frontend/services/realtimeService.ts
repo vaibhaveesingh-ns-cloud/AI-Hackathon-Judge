@@ -195,10 +195,8 @@ export class RealtimeTranscriptionClient {
     const gain = audioContext.createGain();
     gain.gain.value = 0;
 
-    let workletUrl: string | URL = workletModuleUrl;
-    if (import.meta.env.DEV) {
-      workletUrl = new URL('./pcmWorkletProcessor.ts?url', import.meta.url);
-    }
+    // AudioWorklet must load JavaScript, not TypeScript
+    const workletUrl = new URL(workletModuleUrl, import.meta.url);
     await audioContext.audioWorklet.addModule(workletUrl);
     console.log('[realtime] worklet module loaded', workletUrl.toString());
     const workletNode = new AudioWorkletNode(audioContext, 'pcm-encoder-processor');
@@ -273,7 +271,7 @@ export class RealtimeTranscriptionClient {
     } else if (command === 'finalize') {
       realtimeCommand = 'input_audio_buffer.clear';
     } else if (command === 'commit') {
-      realtimeCommand = 'response.audio_transcript.done';
+      realtimeCommand = 'input_audio_buffer.commit';
     } else {
       realtimeCommand = command;
     }
@@ -305,23 +303,27 @@ export class RealtimeTranscriptionClient {
 
       // Handle OpenAI Realtime API events
       if (type === 'conversation.item.input_audio_transcription.delta') {
+        console.log('[realtime] Transcription delta received:', payload);
         const deltaText =
           typeof payload?.delta === 'string'
             ? payload.delta
             : typeof payload?.delta?.transcript === 'string'
               ? payload.delta.transcript
               : undefined;
+        console.log('[realtime] Delta text:', deltaText);
         emitPartial(deltaText);
         return;
       }
       
       if (type === 'conversation.item.input_audio_transcription.completed') {
+        console.log('[realtime] Transcription completed received:', payload);
         const transcriptText =
           typeof payload?.transcript === 'string'
             ? payload.transcript
             : typeof payload?.text === 'string'
               ? payload.text
               : undefined;
+        console.log('[realtime] Final text:', transcriptText);
         emitFinal(transcriptText);
         return;
       }

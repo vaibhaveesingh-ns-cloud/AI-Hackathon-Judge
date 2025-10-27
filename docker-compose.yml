@@ -22,7 +22,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "80:80"
+      - "3000:3000"  # Changed to use Vite dev server port
     env_file:
       - frontend/.env
     restart: unless-stopped

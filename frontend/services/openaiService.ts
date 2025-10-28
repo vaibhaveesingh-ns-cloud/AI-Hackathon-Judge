@@ -240,7 +240,10 @@ export const getFinalPresentationFeedback = async (
         .filter((entry) => entry.context === 'q&a' && entry.speaker === 'judge')
         .map((entry) => entry.text);
 
-  const slideContent = slideTexts.length
+  // Check if slides are empty or not provided
+  const hasValidSlides = slideTexts.length > 0 && slideTexts.some(text => text.trim().length > 0);
+  
+  const slideContent = hasValidSlides
     ? slideTexts.map((text, i) => `Slide ${i + 1}:\n${text}`).join('\n\n')
     : 'No slides were provided.';
 
@@ -261,11 +264,16 @@ TRANSCRIPT INSIGHTS:
 ${transcriptInsights.join('\n')}
 `;
 
+  // Add special instruction if no slides were provided
+  const slidesInstruction = hasValidSlides 
+    ? '' 
+    : '\n\nIMPORTANT: No slides were provided for this presentation. You MUST score the slides criterion as 0 and explain that slides are mandatory for hackathon presentations.\n';
+  
   const prompt = finalFeedbackPromptTemplate
-    .replace('{{PRESENTATION_TRANSCRIPT}}', presentationTranscript)
+    .replace('{{PRESENTATION_TRANSCRIPT}}', presentationTranscript || 'No transcript available.')
     .replace('{{SLIDE_CONTENT}}', slideContent)
-    .replace('{{QUESTIONS_SECTION}}', derivedQuestions.length > 0 ? derivedQuestions.join('\n\n') : 'No Q&A session was held.')
-    + '\n\n' + transcriptMetrics;
+    .replace('{{QUESTIONS_SECTION}}', derivedQuestions.join('\n'))
+    .replace('{{TRANSCRIPT_METRICS}}', transcriptMetrics) + slidesInstruction;
 
   const userMessage: ResponseInputItem.Message = {
     role: 'user',
@@ -310,16 +318,19 @@ ${transcriptInsights.join('\n')}
     const jsonText = extractOutputText(response);
     const rawFeedback = JSON.parse(jsonText) as Partial<Omit<PresentationFeedback, 'questionsAsked'>>;
 
+    // If no valid slides were provided, automatically set slides score to 0
     const normalizedBreakdown: ScoreBreakdown = {
       delivery: clampScore(rawFeedback.scoreBreakdown?.delivery),
       engagement: clampScore(rawFeedback.scoreBreakdown?.engagement),
-      slides: clampScore(rawFeedback.scoreBreakdown?.slides),
+      slides: hasValidSlides ? clampScore(rawFeedback.scoreBreakdown?.slides) : 0,
     };
 
     const normalizedReasons: ScoreReasons = {
       delivery: rawFeedback.scoreReasons?.delivery ?? 'Delivery insights were not provided.',
       engagement: rawFeedback.scoreReasons?.engagement ?? 'Engagement insights were not provided.',
-      slides: rawFeedback.scoreReasons?.slides ?? 'Slide insights were not provided.',
+      slides: hasValidSlides 
+        ? (rawFeedback.scoreReasons?.slides ?? 'Slide insights were not provided.')
+        : 'No slides were provided. Slides are a critical component of a hackathon presentation and their absence significantly impacts the overall presentation quality.',
     };
 
     const computedOverall = Number(
@@ -331,10 +342,21 @@ ${transcriptInsights.join('\n')}
     );
 
     const strengths = Array.isArray(rawFeedback.strengths) ? rawFeedback.strengths : [];
-    const areasForImprovement = Array.isArray(rawFeedback.areasForImprovement)
+    let areasForImprovement = Array.isArray(rawFeedback.areasForImprovement)
       ? rawFeedback.areasForImprovement
       : [];
-    const overallSummary = typeof rawFeedback.overallSummary === 'string' ? rawFeedback.overallSummary : '';
+    
+    // If no slides were provided, ensure this is listed as a critical area for improvement
+    if (!hasValidSlides && !areasForImprovement.some(item => item.toLowerCase().includes('slide'))) {
+      areasForImprovement = [
+        'CRITICAL: No presentation slides were provided. Visual aids are essential for hackathon presentations to effectively communicate technical concepts, architecture, and demos.',
+        ...areasForImprovement
+      ];
+    }
+    
+    const overallSummary = typeof rawFeedback.overallSummary === 'string' 
+      ? (hasValidSlides ? rawFeedback.overallSummary : `${rawFeedback.overallSummary} Note: The absence of presentation slides significantly impacted the overall score.`)
+      : '';
 
     return {
       overallScore: computedOverall,

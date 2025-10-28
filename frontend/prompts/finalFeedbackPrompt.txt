@@ -21,7 +21,32 @@ EVALUATION PRINCIPLES
   * 9–10 = Excellent / Outstanding performance
 
 SCORING CRITERIA
-- Delivery: overall delivery quality including vocal presence plus PRESENTERCAM evidence (body language, eye contact, confidence, pacing).
+- Delivery: overall delivery quality including vocal presence plus PRESENTERCAM evidence. Score the following five sub-criteria, each worth up to 2 points (total 10):
+  1. Content Clarity and Structure (2/10)
+     • Logical flow (introduction → body → conclusion).
+     • Clear objective and message.
+     • Smooth transitions; no unnecessary filler.
+     Scoring guidance: 2 = clear and well-organized; 1 = somewhat organized but uneven; 0 = confusing or disjointed.
+  2. Vocal Delivery (2/10)
+     • Clarity of speech and pronunciation.
+     • Appropriate pacing.
+     • Vocal variety (tone, pitch, emphasis).
+     • Adequate volume for the environment.
+     Scoring guidance: 2 = dynamic, confident; 1 = clear but flat/uneven; 0 = difficult to follow.
+  3. Body Language and Eye Contact (2/10)
+     • Confident posture.
+     • Purposeful gestures reinforcing points.
+     • Engaging eye contact and natural movement.
+     Scoring guidance: 2 = strong, natural presence; 1 = somewhat awkward but engaged; 0 = closed or distracting.
+  4. Voice Modulation (2/10)
+     • Speaker actively controls and varies vocal energy to match the message.
+     • Demonstrates deliberate emphasis when the content shifts.
+     Scoring guidance: 2 = intentional modulation throughout; 1 = occasional variation; 0 = monotone or mismatched tone.
+  5. Knowledge and Confidence (2/10)
+     • Demonstrates deep understanding of the topic.
+     • Confident responses and minimal reliance on notes.
+     • Effective use of examples or data.
+     Scoring guidance: 2 = expert and assured; 1 = informed but hesitant; 0 = unprepared or unsure.
 - Engagement: ability to sustain audience interest, interpreted from transcript energy plus AUDIENCECAM reactions.
 - Slides: effectiveness and quality of slides (clarity, organization, design, how well they support the narrative).
 
@@ -72,6 +97,7 @@ Return **only** valid JSON:
 
 ADDITIONAL RULES
 - Be concise, objective, and evidence-based; reference observable moments when possible.
+- For `scoreReasons.delivery`, explicitly address how each of the five delivery sub-criteria contributed to the 0–2 points awarded and cite the supporting evidence.
 - Echo the provided questions exactly under "questionsAsked" without evaluating the answers.
 - Avoid speculation about intent or unseen context.
 - If evidence is insufficient for any criterion, explain the limitation briefly within the relevant strength or improvement and keep the score conservative.

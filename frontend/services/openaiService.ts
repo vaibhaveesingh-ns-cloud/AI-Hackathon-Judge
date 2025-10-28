@@ -29,6 +29,13 @@ const clampScore = (value: unknown): number => {
   return numeric;
 };
 
+const DELIVERY_REASON_FALLBACK = `Include evidence-backed notes for each 2-point delivery sub-criterion:
+1. Content clarity & structure.
+2. Vocal delivery (clarity, pace, variety, volume).
+3. Body language and eye contact.
+4. Voice modulation and control.
+5. Knowledge and confidence in the topic.`;
+
 const feedbackSchema = {
   type: 'object',
   additionalProperties: false,
@@ -326,7 +333,7 @@ ${transcriptInsights.join('\n')}
     };
 
     const normalizedReasons: ScoreReasons = {
-      delivery: rawFeedback.scoreReasons?.delivery ?? 'Delivery insights were not provided.',
+      delivery: rawFeedback.scoreReasons?.delivery ?? DELIVERY_REASON_FALLBACK,
       engagement: rawFeedback.scoreReasons?.engagement ?? 'Engagement insights were not provided.',
       slides: hasValidSlides 
         ? (rawFeedback.scoreReasons?.slides ?? 'Slide insights were not provided.')

@@ -36,6 +36,14 @@ const DELIVERY_REASON_FALLBACK = `Include evidence-backed notes for each 2-point
 4. Voice modulation and control.
 5. Knowledge and confidence in the topic.`;
 
+const ENGAGEMENT_REASON_FALLBACK = `Cover evidence for all engagement sub-criteria:
+1. Timeframe control (target 5–7 minutes).
+2. Audience responsiveness (facial cues, posture, reactions).
+3. Presenter engagement techniques (questions, direct address, adaptive delivery).
+If no audience reactions are observed, explicitly note the absence and confirm the audience responsiveness sub-score is 0.`;
+
+const AUDIENCE_REACTION_IMPROVEMENT = 'Audience responsiveness scored 0 because no audience reactions were captured. Ensure the audience camera records visible responses such as smiles, nods, or audience questions in future sessions.';
+
 const feedbackSchema = {
   type: 'object',
   additionalProperties: false,
@@ -328,7 +336,10 @@ ${transcriptInsights.join('\n')}
     // If no valid slides were provided, automatically set slides score to 0
     const normalizedBreakdown: ScoreBreakdown = {
       delivery: clampScore(rawFeedback.scoreBreakdown?.delivery),
-      engagement: clampScore(rawFeedback.scoreBreakdown?.engagement),
+      engagement:
+        audienceEvidenceFrames.length === 0
+          ? 0
+          : clampScore(rawFeedback.scoreBreakdown?.engagement),
       slides: hasValidSlides ? clampScore(rawFeedback.scoreBreakdown?.slides) : 0,
     };
 
@@ -352,6 +363,10 @@ ${transcriptInsights.join('\n')}
     let areasForImprovement = Array.isArray(rawFeedback.areasForImprovement)
       ? rawFeedback.areasForImprovement
       : [];
+
+    if (audienceEvidenceFrames.length === 0 && !areasForImprovement.some(item => item.includes('Audience responsiveness scored 0'))) {
+      areasForImprovement = [AUDIENCE_REACTION_IMPROVEMENT, ...areasForImprovement];
+    }
     
     // If no slides were provided, ensure this is listed as a critical area for improvement
     if (!hasValidSlides && !areasForImprovement.some(item => item.toLowerCase().includes('slide'))) {

@@ -47,7 +47,19 @@ SCORING CRITERIA
      • Confident responses and minimal reliance on notes.
      • Effective use of examples or data.
      Scoring guidance: 2 = expert and assured; 1 = informed but hesitant; 0 = unprepared or unsure.
-- Engagement: ability to sustain audience interest, interpreted from transcript energy plus AUDIENCECAM reactions.
+- Engagement: judge audience connection using these sub-criteria (total 10 points):
+  1. Within timeframe (2/10)
+     • Presentation duration should fall between 5–7 minutes based on transcript timing.
+     • Deduct points if it falls short or overruns significantly.
+  2. Audience Responsiveness (4/10)
+     • Use AUDIENCECAM frames and any audience audio cues.
+     • Look for smiles, nods, eye contact, attentive posture, laughter, applause, murmurs, questions, affirmations, raised hands, or poll participation.
+     • Penalize visible distraction (phones, side conversations, disengaged body language).
+     • If no audience reactions are captured, this sub-score must be 0 and the absence called out explicitly.
+  3. Presenter Engagement Techniques (4/10)
+     • Use PRESENTERCAM evidence plus transcript cues.
+     • Evaluate eye contact/camera awareness, direct address by name, interactive questions or polls, and adaptive changes in tone/pace when attention dips.
+     • Reward active techniques that invite participation and maintain energy.
 - Slides: effectiveness and quality of slides (clarity, organization, design, how well they support the narrative).
 
 WEIGHTING
@@ -98,6 +110,7 @@ Return **only** valid JSON:
 ADDITIONAL RULES
 - Be concise, objective, and evidence-based; reference observable moments when possible.
 - For `scoreReasons.delivery`, explicitly address how each of the five delivery sub-criteria contributed to the 0–2 points awarded and cite the supporting evidence.
+- For `scoreReasons.engagement`, cover the three engagement sub-criteria (timeframe control, audience responsiveness, presenter techniques) and reference supporting evidence. If no audience reactions are observed, state this clearly and confirm the audience responsiveness score is 0.
 - Echo the provided questions exactly under "questionsAsked" without evaluating the answers.
 - Avoid speculation about intent or unseen context.
 - If evidence is insufficient for any criterion, explain the limitation briefly within the relevant strength or improvement and keep the score conservative.

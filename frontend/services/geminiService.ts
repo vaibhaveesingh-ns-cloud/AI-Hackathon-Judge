@@ -24,6 +24,11 @@ const DELIVERY_REASON_FALLBACK = `Include evidence-backed notes for each 2-point
 4. Voice modulation and control.
 5. Knowledge and confidence in the topic.`;
 
+const ENGAGEMENT_REASON_FALLBACK = `Cover evidence for all engagement sub-criteria:
+1. Timeframe control (target 5–7 minutes).
+2. Audience responsiveness (facial cues, posture, reactions).
+3. Presenter engagement techniques (questions, direct address, adaptive delivery).`;
+
 const feedbackSchema = {
   type: Type.OBJECT,
   properties: {
@@ -222,10 +227,9 @@ export const getFinalPresentationFeedback = async (
       slides: hasValidSlides ? clampScore(rawFeedback.scoreBreakdown?.slides) : 0
     };
 
-    const DELIVERY_REASON_FALLBACK = 'The delivery score was not provided. Please consider the following sub-criteria when evaluating delivery: vocal presence, body language, confidence, gestures, and eye contact.';
     const normalizedReasons: ScoreReasons = {
       delivery: rawFeedback.scoreReasons?.delivery ?? DELIVERY_REASON_FALLBACK,
-      engagement: rawFeedback.scoreReasons?.engagement ?? 'Engagement insights were not provided.',
+      engagement: rawFeedback.scoreReasons?.engagement ?? ENGAGEMENT_REASON_FALLBACK,
       slides: hasValidSlides 
         ? (rawFeedback.scoreReasons?.slides ?? 'Slide insights were not provided.')
         : 'No slides were provided. Slides are a critical component of a hackathon presentation and their absence significantly impacts the overall presentation quality.'

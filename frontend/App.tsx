@@ -138,13 +138,21 @@ const deriveExtensionFromMime = (mime: string | undefined): string => {
   return DEFAULT_AUDIO_MIME.extension;
 };
 
+const formatAnalysisTime = (milliseconds: number): string => {
+  const seconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  
+  if (minutes > 0) {
+    return `${minutes} minute${minutes !== 1 ? 's' : ''} ${remainingSeconds} second${remainingSeconds !== 1 ? 's' : ''}`;
+  }
+  return `${seconds} second${seconds !== 1 ? 's' : ''}`;
+};
+
 const App: React.FC = () => {
   const [status, setStatus] = useState<SessionStatus>(SessionStatus.IDLE);
   const statusRef = useRef(status);
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
-
+  
   const [transcriptionHistory, setTranscriptionHistory] = useState<TranscriptionEntry[]>([]);
   const [liveTranscript, setLiveTranscript] = useState<string>('');
   const [liveRealtimeTranscript, setLiveRealtimeTranscript] = useState<string>('');
@@ -163,6 +171,28 @@ const App: React.FC = () => {
   const [pptxFile, setPptxFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  
+  // Timing tracking
+  const [analysisStartTime, setAnalysisStartTime] = useState<number | null>(null);
+  const [totalAnalysisTime, setTotalAnalysisTime] = useState<number | null>(null);
+  const [processingElapsedTime, setProcessingElapsedTime] = useState<number>(0);
+  
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+  
+  // Update elapsed time during processing
+  useEffect(() => {
+    if (status === SessionStatus.PROCESSING && analysisStartTime) {
+      const interval = setInterval(() => {
+        setProcessingElapsedTime(Date.now() - analysisStartTime);
+      }, 1000); // Update every second
+      
+      return () => clearInterval(interval);
+    } else {
+      setProcessingElapsedTime(0);
+    }
+  }, [status, analysisStartTime]);
 
   const [questions, setQuestions] = useState<string[]>([]);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
@@ -606,6 +636,10 @@ const App: React.FC = () => {
     listenerVideoFramesRef.current = [];
     setCurrentSlide(0);
     setQuestions([]);
+    
+    // Start timing the analysis
+    setAnalysisStartTime(Date.now());
+    setTotalAnalysisTime(null);
 
     try {
         const speakerConstraints: MediaStreamConstraints = {
@@ -825,6 +859,19 @@ const App: React.FC = () => {
       slides,
       questionSet
     );
+    
+    // Calculate total analysis time
+    if (analysisStartTime) {
+      const endTime = Date.now();
+      const totalTime = endTime - analysisStartTime;
+      setTotalAnalysisTime(totalTime);
+      console.log(`[Analysis Complete] Total time: ${formatAnalysisTime(totalTime)} (${(totalTime / 1000).toFixed(2)} seconds)`);
+      console.log(`[Timing Breakdown]`);
+      console.log(`  - Start: ${new Date(analysisStartTime).toLocaleTimeString()}`);
+      console.log(`  - End: ${new Date(endTime).toLocaleTimeString()}`);
+      console.log(`  - Duration: ${totalTime}ms`);
+    }
+    
     if (finalFeedback) {
       setFeedback(finalFeedback);
       setStatus(SessionStatus.COMPLETE);
@@ -832,7 +879,7 @@ const App: React.FC = () => {
       setError('Could not generate feedback. The presentation may have been too short.');
       setStatus(SessionStatus.ERROR);
     }
-  }, [transcriptionHistory, stopMediaProcessing, slides, questions]);
+  }, [transcriptionHistory, stopMediaProcessing, slides, questions, analysisStartTime]);
   
   const uploadVideoIfAvailable = useCallback(
     async (role: 'presenter' | 'audience', chunks: Blob[], startMs: number, durationMs: number) => {
@@ -953,6 +1000,10 @@ const App: React.FC = () => {
     setVideoFrames(extractedFrames);
     setIsProcessingVideo(true);
     
+    // Start timing the video analysis
+    setAnalysisStartTime(Date.now());
+    setTotalAnalysisTime(null);
+    
     try {
       // Initialize video transcription service
       if (!videoTranscriptionRef.current) {
@@ -1046,6 +1097,19 @@ const App: React.FC = () => {
       case SessionStatus.COMPLETE:
         return (
           <div className="space-y-6">
+            {totalAnalysisTime && (
+              <div className="bg-gradient-to-br from-green-900/20 to-emerald-900/20 border border-green-800/30 rounded-xl p-4">
+                <div className="flex items-center gap-3">
+                  <i className="fas fa-clock text-green-400"></i>
+                  <div>
+                    <p className="text-green-400 font-semibold">Analysis Complete</p>
+                    <p className="text-slate-400 text-sm">
+                      Total processing time: {formatAnalysisTime(totalAnalysisTime)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
             <FeedbackCard feedback={feedback} />
             <TranscriptViewer 
               sessionId={sessionId}
@@ -1276,6 +1340,11 @@ const App: React.FC = () => {
             <div className="flex flex-col items-center gap-6">
               <i className="fas fa-spinner fa-spin fa-3x text-indigo-400"></i>
               <p className="text-xl text-gray-300">Processing your presentation...</p>
+              {processingElapsedTime > 0 && (
+                <p className="text-sm text-slate-400">
+                  Elapsed: {formatAnalysisTime(processingElapsedTime)}
+                </p>
+              )}
             </div>
             <TranscriptViewer 
               sessionId={sessionId}

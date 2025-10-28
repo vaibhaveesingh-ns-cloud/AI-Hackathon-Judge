@@ -128,7 +128,14 @@ const FeedbackCard: React.FC<{ feedback: PresentationFeedback | null }> = ({ fee
                   </div>
                   <span className="text-2xl font-bold text-indigo-200">{score.toFixed(1)}</span>
                 </summary>
-                <div className="px-5 pb-5 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{reason}</div>
+                <div className="px-5 pb-5 text-slate-300 leading-relaxed space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Score</span>
+                    <span className="text-lg font-bold text-indigo-200">{score.toFixed(1)} / 10</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${getScoreColor(score)}`}>{descriptor}</span>
+                  </div>
+                  <div className="text-sm whitespace-pre-wrap">{reason}</div>
+                </div>
               </details>
             );
           })}

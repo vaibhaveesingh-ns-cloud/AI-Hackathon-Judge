@@ -15,8 +15,8 @@ interface RealtimeCallbacks {
 }
 
 const PCM_BLOCK_SIZE = 8192;  // Larger block size for more stable processing
-const COMMIT_INTERVAL_MS = 800;  // Slightly longer interval for better sentence grouping
-const MIN_COMMIT_SAMPLES = 4800; // 300ms of 16kHz mono audio - ensure enough audio before committing
+const COMMIT_INTERVAL_MS = 500;  // Balanced interval for continuous flow
+const MIN_COMMIT_SAMPLES = 3200; // 200ms of 16kHz mono audio - more frequent commits for continuous transcription
 
 const clampSample = (value: number): number => {
   const clamped = Math.max(-1, Math.min(1, value));
@@ -176,6 +176,12 @@ export class RealtimeTranscriptionClient {
       this.audioContext = null;
     }
 
+    // Clear any pending commit timer
+    if (this.commitTimer !== null) {
+      clearTimeout(this.commitTimer);
+      this.commitTimer = null;
+    }
+
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       if (this.ws.readyState === WebSocket.OPEN) {
         this.sendCommand('finalize');
@@ -185,6 +191,7 @@ export class RealtimeTranscriptionClient {
     this.ws = null;
     this.callbacks = {};
     this.appendSinceCommit = false;
+    this.pendingSamplesSinceCommit = 0;
   }
 
   private async configureAudioPipeline(stream: MediaStream): Promise<void> {
@@ -195,19 +202,35 @@ export class RealtimeTranscriptionClient {
     
     // Add noise suppression and echo cancellation
     const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.8;
+    analyser.fftSize = 512;  // Higher FFT for better frequency resolution
+    analyser.smoothingTimeConstant = 0.85;
+    analyser.minDecibels = -60;  // Ignore very quiet sounds
+    analyser.maxDecibels = -10;  // Normalize loud sounds
+    
+    // Create a high-pass filter to remove low-frequency noise
+    const highPassFilter = audioContext.createBiquadFilter();
+    highPassFilter.type = 'highpass';
+    highPassFilter.frequency.value = 80;  // Remove frequencies below 80Hz (rumble/noise)
+    highPassFilter.Q.value = 1;
     
     // Create a compressor to normalize audio levels
     const compressor = audioContext.createDynamicsCompressor();
-    compressor.threshold.value = -30;
+    compressor.threshold.value = -24;  // Higher threshold for less compression
     compressor.knee.value = 30;
-    compressor.ratio.value = 12;
+    compressor.ratio.value = 8;  // Less aggressive ratio
     compressor.attack.value = 0.003;
     compressor.release.value = 0.25;
     
+    // Create a gentler noise gate to preserve speech continuity
+    const noiseGate = audioContext.createDynamicsCompressor();
+    noiseGate.threshold.value = -45;  // Less aggressive gating
+    noiseGate.knee.value = 30;  // Smoother transition
+    noiseGate.ratio.value = 12;  // Moderate ratio for natural sound
+    noiseGate.attack.value = 0.002;
+    noiseGate.release.value = 0.05;  // Faster release for continuous speech
+    
     const gain = audioContext.createGain();
-    gain.gain.value = 1.2;  // Slightly boost the gain for clearer audio
+    gain.gain.value = 1.0;  // Normal gain level
 
     // AudioWorklet must load JavaScript, not TypeScript
     const workletUrl = new URL(workletModuleUrl, import.meta.url);
@@ -223,9 +246,11 @@ export class RealtimeTranscriptionClient {
     };
 
     // Connect audio processing chain:
-    // source -> analyser -> compressor -> worklet -> gain -> destination
-    source.connect(analyser);
-    analyser.connect(compressor);
+    // source -> highpass -> analyser -> noisegate -> compressor -> worklet -> gain -> destination
+    source.connect(highPassFilter);
+    highPassFilter.connect(analyser);
+    analyser.connect(noiseGate);
+    noiseGate.connect(compressor);
     compressor.connect(workletNode);
     workletNode.connect(gain);
     gain.connect(audioContext.destination);
@@ -240,7 +265,24 @@ export class RealtimeTranscriptionClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    console.log('[realtime] sending audio chunk', pcm.byteLength, 'bytes,', pcm.length, 'samples');
+    
+    // Calculate RMS (Root Mean Square) to detect if there's actual audio
+    let sum = 0;
+    for (let i = 0; i < pcm.length; i++) {
+      const normalized = pcm[i] / 32768.0;  // Normalize to -1 to 1
+      sum += normalized * normalized;
+    }
+    const rms = Math.sqrt(sum / pcm.length);
+    const rmsDb = 20 * Math.log10(Math.max(rms, 0.00001));  // Convert to dB
+    
+    // Only send if audio is above noise floor (-45 dB for better sensitivity)
+    if (rmsDb < -45) {
+      console.log('[realtime] Skipping silent chunk (RMS:', rmsDb.toFixed(1), 'dB)');
+      // Don't schedule commits during silence
+      return;
+    }
+    
+    console.log('[realtime] sending audio chunk', pcm.byteLength, 'bytes, RMS:', rmsDb.toFixed(1), 'dB');
     this.pendingSamplesSinceCommit += pcm.length;
     
     // Send audio as base64 to OpenAI Realtime API
@@ -269,18 +311,21 @@ export class RealtimeTranscriptionClient {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         return;
       }
-      if (!this.appendSinceCommit) {
+      // Only commit if we have actually appended audio
+      if (!this.appendSinceCommit || this.pendingSamplesSinceCommit === 0) {
+        console.log('[realtime] No audio to commit, skipping');
         return;
       }
       if (this.pendingSamplesSinceCommit < MIN_COMMIT_SAMPLES) {
         console.log('[realtime] Not enough samples to commit:', this.pendingSamplesSinceCommit, 'vs required', MIN_COMMIT_SAMPLES);
-        this.scheduleCommit();
+        // Don't reschedule if we don't have enough samples - wait for more audio
         return;
       }
       console.log('[realtime] Committing audio buffer with', this.pendingSamplesSinceCommit, 'samples');
+      this.sendCommand('commit');
+      // Reset counters after sending commit command
       this.appendSinceCommit = false;
       this.pendingSamplesSinceCommit = 0;
-      this.sendCommand('commit');
     }, COMMIT_INTERVAL_MS);
   }
 

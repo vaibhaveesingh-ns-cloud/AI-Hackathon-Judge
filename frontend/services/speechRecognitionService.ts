@@ -55,22 +55,31 @@ export class SpeechRecognitionController {
                 clearTimeout(this.sentenceTimeout);
               }
               
-              // Check if this looks like a complete sentence
+              // Check if this looks like a complete sentence or thought
               const endsWithPunctuation = /[.!?]$/.test(trimmed);
+              const hasMinimumWords = this.accumulatedTranscript.split(' ').length >= 8;
               const timeSinceLastFinal = Date.now() - this.lastFinalTime;
               
-              if (endsWithPunctuation || timeSinceLastFinal > 2000) {
-                // It's a complete sentence or there's been a long pause
-                this.onFinal?.(this.accumulatedTranscript);
-                this.accumulatedTranscript = '';
+              // More intelligent sentence completion detection
+              if (endsWithPunctuation || 
+                  (hasMinimumWords && timeSinceLastFinal > 1500) ||
+                  timeSinceLastFinal > 3000) {
+                // Complete sentence, enough words with pause, or long pause
+                if (this.accumulatedTranscript.length > 0) {
+                  this.onFinal?.(this.accumulatedTranscript);
+                  this.accumulatedTranscript = '';
+                }
               } else {
-                // Wait for more chunks to form a complete sentence
+                // Wait for more chunks to form continuous speech
+                if (this.sentenceTimeout) {
+                  clearTimeout(this.sentenceTimeout);
+                }
                 this.sentenceTimeout = setTimeout(() => {
                   if (this.accumulatedTranscript.length > 0) {
                     this.onFinal?.(this.accumulatedTranscript);
                     this.accumulatedTranscript = '';
                   }
-                }, 1500); // Wait 1.5 seconds for more chunks
+                }, 1000); // Shorter timeout for more continuous flow
               }
               
               this.lastFinalTime = Date.now();

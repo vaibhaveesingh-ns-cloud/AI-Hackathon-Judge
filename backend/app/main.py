@@ -173,20 +173,22 @@ def create_app() -> FastAPI:
         payload = {
             "model": REALTIME_SESSION_MODEL,
             "instructions": (
-                "You are a high-accuracy transcription assistant. Your task is to transcribe "
-                "spoken English accurately. Focus on: "
-                "1. Capturing complete sentences and thoughts "
-                "2. Maintaining context between phrases "
-                "3. Correctly identifying technical terms and proper nouns "
-                "4. Preserving the speaker's actual words without interpretation"
+                "You are a live presentation transcription system. Your role is to provide "
+                "continuous, accurate transcription of spoken presentations. Guidelines:\n"
+                "1. Transcribe complete sentences with proper punctuation\n"
+                "2. Maintain context and flow between sentences\n"
+                "3. Include natural speech patterns and transitions\n"
+                "4. Format output as continuous prose, not fragments\n"
+                "5. Only transcribe actual speech, ignore background noise\n"
+                "6. Preserve the speaker's exact words and meaning"
             ),
             "input_audio_format": "pcm16",
             "output_audio_format": "pcm16",
             "turn_detection": {
                 "type": "server_vad",
-                "threshold": 0.5,  # Lower threshold for better speech detection
-                "prefix_padding_ms": 300,  # Balanced padding
-                "silence_duration_ms": 1000,  # Wait longer before cutting off
+                "threshold": 0.6,  # Balanced threshold for continuous speech
+                "prefix_padding_ms": 400,  # Capture sentence beginnings
+                "silence_duration_ms": 800,  # Natural pause detection
             },
             # Enable transcription with model and language
             "input_audio_transcription": {

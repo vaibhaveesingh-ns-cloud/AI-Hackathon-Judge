@@ -3,10 +3,13 @@ import { SessionStatus, TranscriptionEntry, PresentationFeedback } from './types
 import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
+import TranscriptViewer from './components/TranscriptViewer';
 import { getFinalPresentationFeedback, generateQuestions } from './services/openaiService';
 import { SpeechRecognitionController, flushPendingTranscriptions } from './services/speechRecognitionService';
 import { uploadSessionVideo } from './services/sessionService';
 import { parsePptx } from './utils/pptxParser';
+import AudioRecordingService from './services/audioRecordingService';
+import PostTranscriptionService from './services/postTranscriptionService';
 
 type LiveTranscriptItem = {
   id: string;
@@ -190,6 +193,12 @@ const App: React.FC = () => {
   const audienceChunksRef = useRef<Blob[]>([]);
   const [sessionId] = useState<string>(() => crypto.randomUUID());
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Audio recording and transcription services
+  const audioRecorderRef = useRef<AudioRecordingService | null>(null);
+  const postTranscriptionRef = useRef<PostTranscriptionService | null>(null);
+  const [isProcessingTranscript, setIsProcessingTranscript] = useState(false);
+  const [finalTranscript, setFinalTranscript] = useState<string>('');
 
   useEffect(() => {
     transcriptionHistoryRef.current = transcriptionHistory;
@@ -649,9 +658,27 @@ const App: React.FC = () => {
 
         const audioStream = new MediaStream(audioTracks);
 
+        // Initialize audio recording service
+        if (!audioRecorderRef.current) {
+            audioRecorderRef.current = new AudioRecordingService();
+        }
+        
+        // Start recording the full presentation audio
+        await audioRecorderRef.current.startRecording(audioStream);
+        console.log('[App] Started audio recording for post-presentation transcription');
+        
+        // Initialize post-transcription service
+        if (!postTranscriptionRef.current) {
+            postTranscriptionRef.current = new PostTranscriptionService();
+        }
+
+        // Keep the real-time transcription for live feedback (optional)
         speechRecognitionRef.current?.stop();
         speechRecognitionRef.current = null;
         setLiveRealtimeTranscript('');
+        
+        // You can optionally keep real-time transcription for live display
+        // Comment out if you only want post-presentation transcription
         const speechController = new SpeechRecognitionController();
         speechRecognitionRef.current = speechController;
         speechController
@@ -661,6 +688,7 @@ const App: React.FC = () => {
                     setLiveRealtimeTranscript(text);
                 },
                 onFinal: (text) => {
+                    // Still show live transcripts but don't use for final evaluation
                     appendTranscript(text, 'presentation');
                 },
                 onError: (speechError) => {
@@ -814,6 +842,19 @@ const App: React.FC = () => {
     const durationMs = sessionStart > 0 ? Date.now() - sessionStart : 0;
 
     setStatus(SessionStatus.PROCESSING);
+    setIsProcessingTranscript(true);
+    
+    // Stop audio recording and get the blob
+    let audioBlob: Blob | null = null;
+    if (audioRecorderRef.current) {
+        try {
+            audioBlob = await audioRecorderRef.current.stopRecording();
+            console.log('[App] Audio recording stopped, blob size:', audioBlob.size);
+        } catch (error) {
+            console.error('[App] Failed to stop audio recording:', error);
+        }
+    }
+    
     stopMediaProcessing();
     let workingHistory = transcriptionHistoryRef.current.filter((entry) => entry.context === 'presentation');
 
@@ -841,7 +882,41 @@ const App: React.FC = () => {
       setLiveRealtimeTranscript(joined);
     }
 
+    // Process the recorded audio for accurate transcription
+    if (audioBlob && audioBlob.size > 0 && postTranscriptionRef.current) {
+        try {
+            console.log('[App] Starting post-presentation transcription...');
+            const transcriptionResult = await postTranscriptionRef.current.transcribeAudio(audioBlob, {
+                language: 'en',
+                prompt: slides.length > 0 ? `Presentation about: ${slides[0].substring(0, 200)}` : undefined
+            });
+            
+            console.log('[App] Transcription completed:', transcriptionResult.text.length, 'characters');
+            
+            // Convert to TranscriptionEntry format
+            const transcriptEntries = postTranscriptionRef.current.convertToTranscriptionEntries(
+                transcriptionResult, 
+                'presentation'
+            );
+            
+            // Save the transcript for later viewing
+            postTranscriptionRef.current.saveTranscript(sessionId, transcriptionResult);
+            
+            // Update the working history with the accurate transcript
+            if (transcriptEntries.length > 0) {
+                workingHistory = transcriptEntries;
+                setFinalTranscript(transcriptionResult.text);
+                setLiveTranscript(transcriptionResult.text);
+                setLiveRealtimeTranscript('Post-presentation transcript generated successfully');
+            }
+        } catch (error) {
+            console.error('[App] Post-transcription failed:', error);
+            // Fall back to real-time transcript if post-transcription fails
+        }
+    }
+    
     setTranscriptionHistory(workingHistory);
+    setIsProcessingTranscript(false);
 
     const presenterChunks = await collectRecorderChunks(presenterRecorderRef.current, presenterChunksRef.current);
     const audienceChunks = await collectRecorderChunks(audienceRecorderRef.current, audienceChunksRef.current);
@@ -903,7 +978,16 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (status) {
       case SessionStatus.COMPLETE:
-        return <FeedbackCard feedback={feedback} />;
+        return (
+          <div className="space-y-6">
+            <FeedbackCard feedback={feedback} />
+            <TranscriptViewer 
+              sessionId={sessionId}
+              transcript={finalTranscript}
+              isProcessing={false}
+            />
+          </div>
+        );
       case SessionStatus.LISTENING: {
         const [hours = '00', minutes = '00', seconds = '00'] = elapsedTime.split(':');
 
@@ -1122,17 +1206,20 @@ const App: React.FC = () => {
       }
       case SessionStatus.PROCESSING:
         return (
-          <div className="flex flex-col items-center gap-6">
-            <i className="fas fa-spinner fa-spin fa-3x text-indigo-400"></i>
-            <p className="mt-4 text-xl font-medium text-slate-300">
-              {status === SessionStatus.CONNECTING ? "Connecting to Judge..." :
-               status === SessionStatus.GENERATING_QUESTIONS ? "Preparing Questions..." :
-               "Analyzing Your Performance..."}
-            </p>
+          <div className="space-y-6">
+            <div className="flex flex-col items-center gap-6">
+              <i className="fas fa-spinner fa-spin fa-3x text-indigo-400"></i>
+              <p className="text-xl text-gray-300">Processing your presentation...</p>
+            </div>
+            <TranscriptViewer 
+              sessionId={sessionId}
+              transcript={finalTranscript}
+              isProcessing={isProcessingTranscript}
+            />
           </div>
         );
-      case SessionStatus.GENERATING_QUESTIONS:
       case SessionStatus.CONNECTING:
+      case SessionStatus.GENERATING_QUESTIONS:
         return (
           <div className="flex flex-col items-center justify-center text-center">
             <i className="fas fa-spinner fa-spin fa-3x text-indigo-400"></i>

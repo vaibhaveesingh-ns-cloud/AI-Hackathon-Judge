@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
-
+import json, logging
+#logging.getLogger("uvicorn").info(json.dumps(raw_feedback, indent=2))
 import asyncio
 import io
 import json
@@ -34,6 +35,8 @@ from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 from .analysis_service import run_analysis_and_store
 from .config import MAX_UPLOAD_SIZE, MAX_VIDEO_SIZE
 from .audio_chunker import AudioChunker
+
+logger = logging.getLogger("uvicorn")
 # Speech2Text is now optional (only needed if SPEECH2TEXT_MODEL env var is set)
 # from .speech2text_service import Speech2TextEngine, TranscriptionResult
 
@@ -724,7 +727,15 @@ def create_app() -> FastAPI:
 
         queue_analysis = role == "presenter"
         if queue_analysis:
-            background_tasks.add_task(run_analysis_and_store, session_id, session_dir)
+            async def run_and_log_analysis() -> None:
+                output_path = run_analysis_and_store(session_id, session_dir)
+                try:
+                    raw_feedback = json.loads(output_path.read_text(encoding="utf-8"))
+                    logger.info("Presentation feedback raw JSON:\n%s", json.dumps(raw_feedback, indent=2))
+                except Exception as exc:
+                    logger.warning("Failed to log feedback JSON for session %s: %s", session_id, exc)
+
+            background_tasks.add_task(run_and_log_analysis)
 
         return JSONResponse(
             {

@@ -12,7 +12,7 @@ QUESTIONS ASKED DURING Q&A: list of audience questions (context only; do not eva
 EVALUATION PRINCIPLES
 Score only the main presentation delivery and slide usage — ignore Q&A performance.
 Base every judgment on observable evidence from transcript, slides, and visual cues.
-Apply strict but fair scoring:
+Apply fair scoring:
 - Use the full scoring range. When evidence shows strong execution with only minor lapses, award high sub-scores (≈1.7–2.0) and overall scores in the 7–9 band.
 - If evidence is missing, ambiguous, contradictory, or partial, cap the affected sub-score at 3 and explain the deficiency.
 Use graded interpretation to avoid over-penalization when partial evidence is present.

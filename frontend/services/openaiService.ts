@@ -42,7 +42,7 @@ const ENGAGEMENT_REASON_FALLBACK = `Cover evidence for all engagement sub-criter
 3. Presenter engagement techniques (questions, direct address, adaptive delivery).
 If no audience reactions are observed, explicitly note the absence and confirm the audience responsiveness sub-score is 0.`;
 
-const AUDIENCE_REACTION_IMPROVEMENT = 'Audience responsiveness scored 0 because no audience reactions were captured. Ensure the audience camera records visible responses such as smiles, nods, or audience questions in future sessions.';
+const AUDIENCE_REACTION_IMPROVEMENT = 'Audience responsiveness cues were limited; capture audience reactions or interactions to better assess engagement in future sessions.';
 
 const feedbackSchema = {
   type: 'object',
@@ -336,22 +336,23 @@ ${transcriptInsights.join('\n')}
     // If no valid slides were provided, automatically set slides score to 0
     const normalizedBreakdown: ScoreBreakdown = {
       delivery: clampScore(rawFeedback.scoreBreakdown?.delivery),
-      engagement:
-        audienceEvidenceFrames.length === 0
-          ? 0
-          : clampScore(rawFeedback.scoreBreakdown?.engagement),
+      engagement: clampScore(rawFeedback.scoreBreakdown?.engagement),
       slides: hasValidSlides ? clampScore(rawFeedback.scoreBreakdown?.slides) : 0,
     };
 
     const normalizedReasons: ScoreReasons = {
       delivery: rawFeedback.scoreReasons?.delivery ?? DELIVERY_REASON_FALLBACK,
-      engagement: rawFeedback.scoreReasons?.engagement ?? 'Engagement insights were not provided.',
-      slides: hasValidSlides 
+      engagement: rawFeedback.scoreReasons?.engagement ?? ENGAGEMENT_REASON_FALLBACK,
+      slides: hasValidSlides
         ? (rawFeedback.scoreReasons?.slides ?? 'Slide insights were not provided.')
-        : 'No slides were provided. Slides are a critical component of a hackathon presentation and their absence significantly impacts the overall presentation quality.',
+        : 'Slides were not provided for this presentation, which are essential for hackathon delivery. The slides score must therefore be 0.',
     };
 
-    const computedOverall = Number(
+    if (audienceEvidenceFrames.length === 0) {
+      normalizedReasons.engagement = `${normalizedReasons.engagement} Audience responsiveness could not be directly observed due to missing audience footage.`.trim();
+    }
+
+    const weightedOverall = Number(
       (
         normalizedBreakdown.delivery * METRIC_WEIGHTS.delivery +
         normalizedBreakdown.engagement * METRIC_WEIGHTS.engagement +
@@ -359,29 +360,31 @@ ${transcriptInsights.join('\n')}
       ).toFixed(2)
     );
 
+    const overallScore =
+      typeof rawFeedback.overallScore === 'number' && Number.isFinite(rawFeedback.overallScore)
+        ? clampScore(rawFeedback.overallScore)
+        : weightedOverall;
+
     const strengths = Array.isArray(rawFeedback.strengths) ? rawFeedback.strengths : [];
     let areasForImprovement = Array.isArray(rawFeedback.areasForImprovement)
       ? rawFeedback.areasForImprovement
       : [];
 
-    if (audienceEvidenceFrames.length === 0 && !areasForImprovement.some(item => item.includes('Audience responsiveness scored 0'))) {
+    if (audienceEvidenceFrames.length === 0 && !areasForImprovement.some(item => item.toLowerCase().includes('audience'))) {
       areasForImprovement = [AUDIENCE_REACTION_IMPROVEMENT, ...areasForImprovement];
     }
-    
-    // If no slides were provided, ensure this is listed as a critical area for improvement
+
     if (!hasValidSlides && !areasForImprovement.some(item => item.toLowerCase().includes('slide'))) {
       areasForImprovement = [
-        'CRITICAL: No presentation slides were provided. Visual aids are essential for hackathon presentations to effectively communicate technical concepts, architecture, and demos.',
-        ...areasForImprovement
+        'Incorporate visual aids or slides to reinforce key concepts and maintain audience focus.',
+        ...areasForImprovement,
       ];
     }
-    
-    const overallSummary = typeof rawFeedback.overallSummary === 'string' 
-      ? (hasValidSlides ? rawFeedback.overallSummary : `${rawFeedback.overallSummary} Note: The absence of presentation slides significantly impacted the overall score.`)
-      : '';
+
+    const overallSummary = typeof rawFeedback.overallSummary === 'string' ? rawFeedback.overallSummary : '';
 
     return {
-      overallScore: computedOverall,
+      overallScore,
       overallSummary,
       scoreBreakdown: normalizedBreakdown,
       scoreReasons: normalizedReasons,

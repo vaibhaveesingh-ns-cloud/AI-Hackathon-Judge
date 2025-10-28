@@ -32,7 +32,7 @@ const clampScore = (value: unknown): number => {
 const DELIVERY_REASON_FALLBACK = `Include evidence-backed notes for each 2-point delivery sub-criterion:
 1. Content clarity & structure.
 2. Vocal delivery (clarity, pace, variety, volume).
-3. Body language and eye contact.
+3. Body language and presence.
 4. Voice modulation and control.
 5. Knowledge and confidence in the topic.`;
 

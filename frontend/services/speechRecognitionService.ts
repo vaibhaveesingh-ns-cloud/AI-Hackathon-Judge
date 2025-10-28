@@ -1,4 +1,5 @@
 import { RealtimeTranscriptionClient } from './realtimeService';
+import { GeminiRealtimeTranscriptionService } from './geminiRealtimeService';
 
 type PartialCallback = (text: string) => void;
 type FinalCallback = (text: string) => void;
@@ -9,12 +10,14 @@ type StartOptions = {
   onPartial?: PartialCallback;
   onFinal?: FinalCallback;
   onError?: ErrorCallback;
+  useGemini?: boolean;
 };
 
 const activeControllers = new Set<SpeechRecognitionController>();
 
 export class SpeechRecognitionController {
-  private client: RealtimeTranscriptionClient | null = null;
+  private client: RealtimeTranscriptionClient | GeminiRealtimeTranscriptionService | null = null;
+  private useGemini: boolean = false;
   private partialBuffer = '';
   private accumulatedTranscript = '';
   private lastFinalTime = 0;
@@ -23,7 +26,18 @@ export class SpeechRecognitionController {
   private onFinal?: FinalCallback;
   private onError?: ErrorCallback;
 
-  async start({ stream, onPartial, onFinal, onError }: StartOptions): Promise<void> {
+  private handleTranscriptionChunk(text: string): void {
+    const trimmed = text.trim();
+    if (trimmed.length > 0) {
+      if (this.accumulatedTranscript.length > 0) {
+        this.accumulatedTranscript += ' ';
+      }
+      this.accumulatedTranscript += trimmed;
+      this.onFinal?.(this.accumulatedTranscript);
+    }
+  }
+
+  async start({ stream, onPartial, onFinal, onError, useGemini = false }: StartOptions): Promise<void> {
     this.stop();
     this.partialBuffer = '';
     this.accumulatedTranscript = '';
@@ -31,14 +45,43 @@ export class SpeechRecognitionController {
     this.onPartial = onPartial;
     this.onFinal = onFinal;
     this.onError = onError;
+    this.useGemini = useGemini;
 
-    const client = new RealtimeTranscriptionClient();
-    this.client = client;
-    activeControllers.add(this);
+    if (useGemini) {
+      // Use Gemini for transcription
+      const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
+      const client = new GeminiRealtimeTranscriptionService(geminiApiKey);
+      this.client = client;
+      
+      await client.start({
+        stream,
+        callbacks: {
+          onTranscription: (text) => {
+            this.handleTranscriptionChunk(text);
+          },
+          onPartial: (text) => {
+            this.onPartial?.(text);
+          },
+          onError: (error) => {
+            this.onError?.(error);
+          },
+          onConnected: () => {
+            console.log('[SpeechRecognition] Connected to Gemini');
+          },
+          onDisconnected: () => {
+            console.log('[SpeechRecognition] Disconnected from Gemini');
+          }
+        }
+      });
+    } else {
+      // Use OpenAI for transcription (existing code)
+      const client = new RealtimeTranscriptionClient();
+      this.client = client;
+      activeControllers.add(this);
 
-    try {
-      await client.start(stream, {
-        onTranscription: (text, options) => {
+      try {
+        await client.start(stream, {
+          onTranscription: (text, options) => {
           if (typeof text !== 'string') return;
 
           if (options?.isFinal) {
@@ -104,13 +147,14 @@ export class SpeechRecognitionController {
         },
         onDisconnected: () => {
           this.flush();
-        },
+        }
       });
     } catch (error) {
       this.client = null;
       activeControllers.delete(this);
       this.partialBuffer = '';
       throw error instanceof Error ? error : new Error('Failed to start speech recognition');
+    }
     }
   }
 

@@ -30,7 +30,7 @@ const toWebSocketUrl = (path: string): string => {
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     return url.toString();
   }
-  const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+  const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
   const url = new URL(path.startsWith('/') ? path : `/${path}`, base);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();

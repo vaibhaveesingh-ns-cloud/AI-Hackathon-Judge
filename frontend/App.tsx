@@ -677,13 +677,14 @@ const App: React.FC = () => {
         speechRecognitionRef.current = null;
         setLiveRealtimeTranscript('');
         
-        // You can optionally keep real-time transcription for live display
-        // Comment out if you only want post-presentation transcription
+        // Use Gemini for real-time transcription
+        const useGemini = true; // Set to true to use Gemini, false for OpenAI
         const speechController = new SpeechRecognitionController();
         speechRecognitionRef.current = speechController;
         speechController
             .start({
                 stream: audioStream,
+                useGemini: useGemini,
                 onPartial: (text) => {
                     setLiveRealtimeTranscript(text);
                 },

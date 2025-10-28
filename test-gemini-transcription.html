@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Gemini Transcription</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 10px;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        #status {
+            margin: 20px 0;
+            padding: 10px;
+            background: #333;
+            border-radius: 5px;
+        }
+        #transcript {
+            margin: 20px 0;
+            padding: 15px;
+            background: #222;
+            border-radius: 5px;
+            min-height: 200px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .error {
+            color: #ff6b6b;
+        }
+        .success {
+            color: #51cf66;
+        }
+        .info {
+            color: #74c0fc;
+        }
+    </style>
+</head>
+<body>
+    <h1>Gemini Live Transcription Test</h1>
+    
+    <div>
+        <button id="startBtn">Start Recording</button>
+        <button id="stopBtn" disabled>Stop Recording</button>
+    </div>
+    
+    <div id="status">Status: Ready</div>
+    
+    <h3>Live Transcript:</h3>
+    <div id="transcript">Transcript will appear here...</div>
+    
+    <script type="module">
+        import { GoogleGenerativeAI } from 'https://esm.run/@google/generative-ai';
+        
+        let genAI = null;
+        let session = null;
+        let audioContext = null;
+        let sourceNode = null;
+        let processorNode = null;
+        let mediaStream = null;
+        let isRecording = false;
+        
+        const statusDiv = document.getElementById('status');
+        const transcriptDiv = document.getElementById('transcript');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        
+        // Replace with your actual Gemini API key
+        const GEMINI_API_KEY = prompt('Enter your Gemini API key:');
+        
+        if (!GEMINI_API_KEY) {
+            statusDiv.innerHTML = '<span class="error">Error: No API key provided</span>';
+        } else {
+            genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+            statusDiv.innerHTML = '<span class="success">API key loaded</span>';
+        }
+        
+        function floatTo16BitPCM(float32Array) {
+            const int16Array = new Int16Array(float32Array.length);
+            for (let i = 0; i < float32Array.length; i++) {
+                const val = Math.max(-1, Math.min(1, float32Array[i]));
+                int16Array[i] = val < 0 ? val * 0x8000 : val * 0x7fff;
+            }
+            return int16Array;
+        }
+        
+        function base64Encode(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+        
+        async function startRecording() {
+            try {
+                statusDiv.innerHTML = '<span class="info">Requesting microphone access...</span>';
+                
+                // Get microphone access
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: 16000
+                    } 
+                });
+                
+                statusDiv.innerHTML = '<span class="info">Setting up audio processing...</span>';
+                
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({ 
+                    sampleRate: 16000 
+                });
+                
+                // Resume if suspended
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+                
+                // Create source node
+                sourceNode = audioContext.createMediaStreamSource(mediaStream);
+                
+                // Create processor node
+                processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                // Keep references to prevent garbage collection
+                window.__audioProcessor = processorNode;
+                window.__sourceNode = sourceNode;
+                
+                statusDiv.innerHTML = '<span class="info">Connecting to Gemini...</span>';
+                
+                // Initialize Gemini model
+                const model = genAI.getGenerativeModel({
+                    model: 'gemini-2.0-flash-exp',
+                    generationConfig: {
+                        temperature: 0.1,
+                    },
+                });
+                
+                // Start chat session
+                session = model.startChat({
+                    history: [],
+                });
+                
+                let audioBuffer = [];
+                let sendInterval = null;
+                
+                // Process audio
+                processorNode.onaudioprocess = (e) => {
+                    if (!isRecording) return;
+                    
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const pcmData = floatTo16BitPCM(inputData);
+                    audioBuffer.push(pcmData);
+                };
+                
+                // Send audio periodically
+                sendInterval = setInterval(async () => {
+                    if (audioBuffer.length === 0 || !session) return;
+                    
+                    try {
+                        // Combine chunks
+                        const totalLength = audioBuffer.reduce((acc, chunk) => acc + chunk.length, 0);
+                        const combinedAudio = new Int16Array(totalLength);
+                        let offset = 0;
+                        
+                        for (const chunk of audioBuffer) {
+                            combinedAudio.set(chunk, offset);
+                            offset += chunk.length;
+                        }
+                        
+                        audioBuffer = [];
+                        
+                        // Convert to base64
+                        const audioData = base64Encode(combinedAudio.buffer);
+                        
+                        // Send to Gemini with transcription prompt
+                        const response = await session.sendMessage([
+                            {
+                                inlineData: {
+                                    mimeType: 'audio/pcm;rate=16000',
+                                    data: audioData
+                                }
+                            },
+                            'Transcribe this audio to text. Only return the transcription, no other text.'
+                        ]);
+                        
+                        // Display response
+                        if (response?.response?.text) {
+                            const text = response.response.text();
+                            if (text && text.trim()) {
+                                transcriptDiv.textContent += text + ' ';
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error sending audio:', error);
+                    }
+                }, 2000); // Send every 2 seconds
+                
+                window.__sendInterval = sendInterval;
+                
+                // Connect audio pipeline
+                sourceNode.connect(processorNode);
+                processorNode.connect(audioContext.destination);
+                
+                isRecording = true;
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                statusDiv.innerHTML = '<span class="success">Recording... Speak now!</span>';
+                
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                statusDiv.innerHTML = `<span class="error">Error: ${error.message}</span>`;
+            }
+        }
+        
+        function stopRecording() {
+            isRecording = false;
+            
+            // Clear interval
+            if (window.__sendInterval) {
+                clearInterval(window.__sendInterval);
+            }
+            
+            // Disconnect audio nodes
+            if (sourceNode) {
+                sourceNode.disconnect();
+            }
+            if (processorNode) {
+                processorNode.disconnect();
+            }
+            
+            // Close audio context
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+            }
+            
+            // Stop media stream
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+            }
+            
+            // Clean up references
+            delete window.__audioProcessor;
+            delete window.__sourceNode;
+            delete window.__sendInterval;
+            
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusDiv.innerHTML = '<span class="info">Recording stopped</span>';
+        }
+        
+        startBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+    </script>
+</body>
+</html>

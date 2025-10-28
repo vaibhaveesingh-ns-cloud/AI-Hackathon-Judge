@@ -31,6 +31,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 
 from .analysis_service import run_analysis_and_store
 from .config import MAX_UPLOAD_SIZE, MAX_VIDEO_SIZE
+from .audio_chunker import AudioChunker
 # Speech2Text is now optional (only needed if SPEECH2TEXT_MODEL env var is set)
 # from .speech2text_service import Speech2TextEngine, TranscriptionResult
 
@@ -497,22 +498,96 @@ def create_app() -> FastAPI:
         if not processed_bytes:
             raise HTTPException(status_code=400, detail="Converted audio clip is empty.")
 
-        def run_transcription() -> object:
-            buf = io.BytesIO(processed_bytes)
-            setattr(buf, "name", processed_filename)
+        # Check if audio needs to be chunked (> 20MB)
+        MAX_DIRECT_SIZE = 20 * 1024 * 1024  # 20MB
+        
+        if len(processed_bytes) > MAX_DIRECT_SIZE:
+            logger.info(f"[transcribe] Large audio file ({len(processed_bytes) / 1024 / 1024:.1f}MB), using chunked processing")
+            
+            # Save processed audio to temp file for chunking
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
+                tmp_audio.write(processed_bytes)
+                tmp_audio_path = Path(tmp_audio.name)
+            
             try:
-                buf.seek(0)
-                return openai_client.audio.transcriptions.create(
-                    model=TRANSCRIPTION_MODEL,
-                    file=buf,
-                    response_format="verbose_json",
-                    temperature=0,
-                )
+                # Split audio into chunks
+                audio_chunks = AudioChunker.split_audio(tmp_audio_path, chunk_duration=300)  # 5-minute chunks
+                logger.info(f"[transcribe] Split audio into {len(audio_chunks)} chunks")
+                
+                # Transcribe each chunk
+                chunk_transcriptions = []
+                chunk_times = []
+                
+                for i, (chunk_data, start_time, end_time) in enumerate(audio_chunks):
+                    logger.info(f"[transcribe] Processing chunk {i+1}/{len(audio_chunks)}")
+                    
+                    def run_chunk_transcription(chunk_bytes: bytes, chunk_name: str) -> object:
+                        buf = io.BytesIO(chunk_bytes)
+                        setattr(buf, "name", chunk_name)
+                        try:
+                            buf.seek(0)
+                            return openai_client.audio.transcriptions.create(
+                                model=TRANSCRIPTION_MODEL,
+                                file=buf,
+                                response_format="verbose_json",
+                                temperature=0,
+                            )
+                        finally:
+                            buf.close()
+                    
+                    chunk_result = await asyncio.to_thread(
+                        run_chunk_transcription, 
+                        chunk_data, 
+                        f"chunk_{i}.wav"
+                    )
+                    
+                    # Convert to dict if needed
+                    if hasattr(chunk_result, 'model_dump'):
+                        chunk_dict = chunk_result.model_dump()
+                    else:
+                        chunk_dict = {
+                            'text': getattr(chunk_result, 'text', ''),
+                            'segments': getattr(chunk_result, 'segments', [])
+                        }
+                    
+                    chunk_transcriptions.append(chunk_dict)
+                    chunk_times.append((start_time, end_time))
+                
+                # Merge all transcriptions
+                merged_result = AudioChunker.merge_transcriptions(chunk_transcriptions, chunk_times)
+                
+                # Create a mock transcription object with merged data
+                class MergedTranscription:
+                    def __init__(self, data):
+                        self.text = data.get('text', '')
+                        self.segments = data.get('segments', [])
+                
+                transcription = MergedTranscription(merged_result)
+                
             finally:
-                buf.close()
+                # Clean up temp file
+                tmp_audio_path.unlink(missing_ok=True)
+        else:
+            # Small file, process directly
+            def run_transcription() -> object:
+                buf = io.BytesIO(processed_bytes)
+                setattr(buf, "name", processed_filename)
+                try:
+                    buf.seek(0)
+                    return openai_client.audio.transcriptions.create(
+                        model=TRANSCRIPTION_MODEL,
+                        file=buf,
+                        response_format="verbose_json",
+                        temperature=0,
+                    )
+                finally:
+                    buf.close()
 
-        try:
             transcription = await asyncio.to_thread(run_transcription)
+        
+        try:
+            # Process transcription (this try block handles all transcription errors)
+            pass
         except BadRequestError as exc:
             message = getattr(exc, "message", str(exc))
             logger.warning("Transcription request rejected: %s", message)

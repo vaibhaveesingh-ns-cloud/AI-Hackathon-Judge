@@ -1,6 +1,7 @@
 # Core web framework
-fastapi
-uvicorn[standard]
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+gunicorn==21.2.0
 python-dotenv
 
 # API clients

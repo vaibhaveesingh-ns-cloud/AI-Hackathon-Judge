@@ -22,7 +22,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY backend/app ./app
+COPY backend/start.sh ./
+COPY backend/gunicorn_config.py ./
+COPY backend/uvicorn_config.py ./
+
+# Make start script executable
+RUN chmod +x start.sh
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./start.sh"]

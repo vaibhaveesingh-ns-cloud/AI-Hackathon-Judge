@@ -9,6 +9,11 @@ services:
       - "8000:8000"
     env_file:
       - backend/.env
+    environment:
+      - MAX_REQUEST_SIZE=1610612736  # 1.5GB in bytes
+      - CLIENT_MAX_BODY_SIZE=1536m
+      - UVICORN_H11_MAX_INCOMPLETE_EVENT_SIZE=1610612736
+      - UVICORN_WS_MAX_SIZE=1610612736
     volumes:
       - ./backend/app:/app/app:ro
     restart: unless-stopped

@@ -15,6 +15,7 @@ import websockets
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from openai import (
     APIConnectionError,
@@ -29,6 +30,7 @@ from starlette.websockets import WebSocketState
 from websockets.exceptions import ConnectionClosed, InvalidStatusCode
 
 from .analysis_service import run_analysis_and_store
+from .config import MAX_UPLOAD_SIZE, MAX_VIDEO_SIZE
 # Speech2Text is now optional (only needed if SPEECH2TEXT_MODEL env var is set)
 # from .speech2text_service import Speech2TextEngine, TranscriptionResult
 
@@ -71,6 +73,15 @@ SUPPORTED_AUDIO_EXTENSIONS = {
     ".mpga",
     ".m4a",
     ".mp4",
+}
+
+SUPPORTED_VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".webm",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".m4v",
 }
 
 
@@ -118,7 +129,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="AI Hackathon Judge API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="AI Hackathon Judge API", 
+        version="0.1.0", 
+        lifespan=lifespan
+    )
 
     # Speech2Text engine disabled - using OpenAI Realtime API instead
     # Uncomment below and add transformers to requirements.txt if you need local speech-to-text
@@ -359,16 +374,28 @@ def create_app() -> FastAPI:
         if not TRANSCRIPTION_MODEL:
             raise HTTPException(status_code=500, detail="Transcription model is not configured on the server.")
 
-        if audio.content_type is None or not audio.content_type.startswith("audio"):
-            raise HTTPException(status_code=400, detail="Uploaded file must be an audio clip.")
+        # Log the received file info
+        logger.info(f"[transcribe] Received file: {audio.filename}, content_type: {audio.content_type}, size: {audio.size if hasattr(audio, 'size') else 'unknown'}")
+        
+        # Accept both audio and video files
+        if audio.content_type is None or not (audio.content_type.startswith("audio") or audio.content_type.startswith("video")):
+            logger.warning(f"[transcribe] Invalid content type: {audio.content_type}")
+            raise HTTPException(status_code=400, detail="Uploaded file must be an audio or video file.")
 
         audio_bytes = await audio.read()
         if not audio_bytes:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty.")
+        
+        logger.info(f"[transcribe] Read {len(audio_bytes)} bytes from uploaded file")
 
         original_name = Path(audio.filename).name if audio.filename else "chunk.webm"
         original_suffix = Path(original_name).suffix.lower()
-        if original_suffix not in SUPPORTED_AUDIO_EXTENSIONS:
+        
+        # Check if it's a video file that needs audio extraction
+        is_video = original_suffix in SUPPORTED_VIDEO_EXTENSIONS
+        logger.info(f"[transcribe] File suffix: {original_suffix}, is_video: {is_video}")
+        
+        if original_suffix not in SUPPORTED_AUDIO_EXTENSIONS and not is_video:
             original_suffix = ".webm"
         filename = Path(audio.filename).name if audio.filename else "chunk.webm"
 
@@ -381,7 +408,54 @@ def create_app() -> FastAPI:
 
         cleanup_paths = [src_path]
 
-        if original_suffix != ".webm":
+        # If it's a video file, extract audio first
+        if is_video:
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as audio_file:
+                    audio_path = Path(audio_file.name)
+                cleanup_paths.append(audio_path)
+                
+                # Extract audio from video using ffmpeg with optimizations
+                logger.info(f"[transcribe] Extracting audio from video: {src_path} -> {audio_path}")
+                
+                # Use hardware acceleration if available and optimize for speed
+                ffmpeg_cmd = (
+                    ffmpeg
+                    .input(str(src_path))
+                    .output(
+                        str(audio_path),
+                        ac=1,  # mono
+                        ar=16000,  # 16kHz sample rate (Whisper's preferred rate)
+                        acodec="pcm_s16le",
+                        format="wav",
+                        # Speed optimizations
+                        threads=0,  # Use all available CPU threads
+                        preset="ultrafast",  # Fastest encoding preset
+                        # Skip video processing entirely
+                        vn=None,  # No video
+                        # Audio filters for better quality
+                        af="aresample=async=1:min_hard_comp=0.100000:first_pts=0",
+                        loglevel="error"  # Show only errors
+                    )
+                    .overwrite_output()
+                )
+                
+                # Run with optimized settings
+                ffmpeg_cmd.run(cmd="ffmpeg", capture_stdout=True, capture_stderr=True)
+                
+                if audio_path.exists() and audio_path.stat().st_size > 0:
+                    processed_bytes = audio_path.read_bytes()
+                    processed_filename = Path(filename).with_suffix(".wav").name
+                    logger.info(f"[transcribe] Successfully extracted audio: {len(processed_bytes)} bytes")
+                else:
+                    raise RuntimeError("ffmpeg failed to extract audio from video")
+            except Exception as extraction_error:
+                logger.error("[transcribe] video audio extraction failed: %s", extraction_error)
+                # Clean up temp files before raising
+                for path in cleanup_paths:
+                    path.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail=f"Failed to extract audio from video file: {str(extraction_error)}")
+        elif original_suffix != ".webm":
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as dst_file:
                     dst_path = Path(dst_file.name)

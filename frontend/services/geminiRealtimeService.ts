@@ -190,7 +190,7 @@ export class GeminiRealtimeTranscriptionService {
         
         // Connect to the live session with audio configuration
         this.session = await globalLiveClient.connect({
-          model: 'models/gemini-2.0-flash-exp', // Latest model with audio support
+          model: 'models/gemini-2.0-flash', // Latest model with audio support
           config: {
             response_modalities: ['AUDIO', 'TEXT'], // Enable both audio and text responses
             system_instruction: `You are a real-time transcription assistant. 

@@ -4,12 +4,14 @@ import PitchPerfectIcon from './components/PitchPerfectIcon';
 import ControlButton from './components/ControlButton';
 import FeedbackCard from './components/FeedbackCard';
 import TranscriptViewer from './components/TranscriptViewer';
+import VideoUpload from './components/VideoUpload';
 import { getFinalPresentationFeedback, generateQuestions } from './services/openaiService';
 import { SpeechRecognitionController, flushPendingTranscriptions } from './services/speechRecognitionService';
 import { uploadSessionVideo } from './services/sessionService';
 import { parsePptx } from './utils/pptxParser';
 import AudioRecordingService from './services/audioRecordingService';
 import PostTranscriptionService from './services/postTranscriptionService';
+import VideoTranscriptionService from './services/videoTranscriptionService';
 
 type LiveTranscriptItem = {
   id: string;
@@ -199,6 +201,13 @@ const App: React.FC = () => {
   const postTranscriptionRef = useRef<PostTranscriptionService | null>(null);
   const [isProcessingTranscript, setIsProcessingTranscript] = useState(false);
   const [finalTranscript, setFinalTranscript] = useState<string>('');
+  
+  // Video upload state
+  const [uploadedVideo, setUploadedVideo] = useState<File | null>(null);
+  const [videoFrames, setVideoFrames] = useState<string[]>([]);
+  const [isProcessingVideo, setIsProcessingVideo] = useState(false);
+  const [recordingMode, setRecordingMode] = useState<'live' | 'upload'>('live');
+  const videoTranscriptionRef = useRef<VideoTranscriptionService | null>(null);
 
   useEffect(() => {
     transcriptionHistoryRef.current = transcriptionHistory;
@@ -938,6 +947,62 @@ const App: React.FC = () => {
     await handleFinishQAndA(generatedQuestions, workingHistory);
   }, [stopMediaProcessing, flushPendingTranscriptions, generateQuestions, slides, handleFinishQAndA, uploadVideoIfAvailable, sessionId]);
   
+  const handleVideoProcessed = useCallback(async (videoFile: File, extractedFrames: string[], duration: number) => {
+    console.log('[App] Processing uploaded video:', videoFile.name);
+    setUploadedVideo(videoFile);
+    setVideoFrames(extractedFrames);
+    setIsProcessingVideo(true);
+    
+    try {
+      // Initialize video transcription service
+      if (!videoTranscriptionRef.current) {
+        videoTranscriptionRef.current = new VideoTranscriptionService();
+      }
+      
+      // Transcribe the video
+      setStatus(SessionStatus.PROCESSING);
+      setLiveTranscript('Transcribing video audio...');
+      
+      const transcriptionResult = await videoTranscriptionRef.current.transcribeVideo(videoFile);
+      
+      console.log('[App] Video transcription complete:', transcriptionResult.text.length, 'characters');
+      
+      // Convert transcription to entries
+      const videoTranscriptEntries: TranscriptionEntry[] = transcriptionResult.segments.map(segment => ({
+        speaker: 'user' as const,
+        text: segment.text,
+        context: 'presentation' as const,
+        startMs: segment.start * 1000,
+        endMs: segment.end * 1000,
+      }));
+      
+      // Update transcript display
+      setFinalTranscript(transcriptionResult.text);
+      setLiveTranscript(transcriptionResult.text);
+      setTranscriptionHistory(videoTranscriptEntries);
+      
+      // Use extracted frames for analysis (combine presenter and audience frames)
+      const halfFrames = Math.floor(extractedFrames.length / 2);
+      speakerVideoFramesRef.current = extractedFrames.slice(0, halfFrames);
+      listenerVideoFramesRef.current = extractedFrames.slice(halfFrames);
+      
+      // Generate questions and feedback
+      setStatus(SessionStatus.GENERATING_QUESTIONS);
+      const generatedQuestions = await generateQuestions(videoTranscriptEntries, slides);
+      setQuestions(generatedQuestions);
+      
+      // Get final feedback
+      await handleFinishQAndA(generatedQuestions, videoTranscriptEntries);
+      
+    } catch (error) {
+      console.error('[App] Video processing error:', error);
+      setError('Failed to process video. Please try again.');
+      setStatus(SessionStatus.ERROR);
+    } finally {
+      setIsProcessingVideo(false);
+    }
+  }, [slides, generateQuestions, handleFinishQAndA]);
+
   const processFile = async (file: File) => {
     if (file && file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation") {
       setPptxFile(file);
@@ -1233,40 +1298,101 @@ const App: React.FC = () => {
         );
       default: // IDLE or ERROR
         return (
-             <div className="w-full max-w-3xl text-center">
-                <h1 className="text-5xl font-extrabold text-slate-100">Welcome to <span className="text-indigo-400">AI Hackathon Judge</span></h1>
-                <p className="mt-4 text-lg text-slate-400 max-w-2xl mx-auto">Ready to ace your hackathon pitch? Upload your presentation to get started.</p>
-                <div 
-                    className={`mt-10 p-8 border-2 border-dashed rounded-2xl transition-colors duration-300 ${isDragOver ? 'border-indigo-400 bg-slate-800/50' : 'border-slate-700'}`}
-                    onDrop={handleDrop} onDragOver={handleDragEvents} onDragLeave={handleDragEvents} onDragEnd={handleDragEvents}
-                >
-                    {!pptxFile && !isParsing && (
-                        <>
-                            <div className="flex flex-col items-center justify-center">
-                                <i className="fas fa-cloud-upload-alt fa-3x mb-4 text-slate-500"></i>
-                                <h2 className="text-2xl font-semibold text-slate-300">Drag & Drop Your Presentation</h2>
-                                <p className="mt-2 text-slate-500">or</p>
-                                <input type="file" id="file-upload" className="hidden" accept=".pptx" onChange={handleFileChange} disabled={isParsing} />
-                                <label htmlFor="file-upload" className="mt-4 cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-full transition-colors duration-300">
-                                    Browse Files
-                                </label>
-                                <p className="mt-4 text-xs text-slate-600">Supported format: .pptx</p>
-                            </div>
-                        </>
-                    )}
-                    {isParsing && (
-                        <div className="flex items-center justify-center text-lg text-yellow-400">
-                            <i className="fas fa-spinner fa-spin mr-3"></i>
-                            Parsing your presentation...
-                        </div>
-                    )}
-                    {pptxFile && !isParsing && slides.length > 0 && (
-                        <div className="flex flex-col items-center justify-center">
-                            <i className="fas fa-check-circle fa-3x mb-4 text-green-400"></i>
-                            <h2 className="text-2xl font-semibold text-slate-300">Presentation Ready</h2>
-                            <p className="mt-2 text-slate-400">"{pptxFile.name}" is loaded with {slides.length} slides.</p>
-                        </div>
-                    )}
+             <div className="w-full max-w-5xl">
+                <h1 className="text-5xl font-extrabold text-slate-100 text-center">Welcome to <span className="text-indigo-400">AI Hackathon Judge</span></h1>
+                <p className="mt-4 text-lg text-slate-400 max-w-2xl mx-auto text-center">Ready to ace your hackathon pitch? Choose how you want to present.</p>
+                
+                {/* Recording Mode Selector */}
+                <div className="mt-8 flex justify-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => setRecordingMode('live')}
+                    className={`px-6 py-3 rounded-xl font-medium transition-all ${
+                      recordingMode === 'live'
+                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/40'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    <i className="fas fa-video mr-2"></i>
+                    Live Recording
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecordingMode('upload')}
+                    className={`px-6 py-3 rounded-xl font-medium transition-all ${
+                      recordingMode === 'upload'
+                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/40'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    <i className="fas fa-upload mr-2"></i>
+                    Upload Video
+                  </button>
+                </div>
+                
+                <div className="mt-10 grid gap-6 lg:grid-cols-2">
+                  {/* Slides Upload Section */}
+                  <div 
+                      className={`p-8 border-2 border-dashed rounded-2xl transition-colors duration-300 ${isDragOver ? 'border-indigo-400 bg-slate-800/50' : 'border-slate-700'}`}
+                      onDrop={handleDrop} onDragOver={handleDragEvents} onDragLeave={handleDragEvents} onDragEnd={handleDragEvents}
+                  >
+                      <h3 className="text-lg font-semibold text-slate-100 mb-4">Presentation Slides</h3>
+                      {!pptxFile && !isParsing && (
+                          <>
+                              <div className="flex flex-col items-center justify-center">
+                                  <i className="fas fa-file-powerpoint fa-3x mb-4 text-slate-500"></i>
+                                  <h2 className="text-xl font-semibold text-slate-300">Drag & Drop Slides</h2>
+                                  <p className="mt-2 text-slate-500">or</p>
+                                  <input type="file" id="file-upload" className="hidden" accept=".pptx" onChange={handleFileChange} disabled={isParsing} />
+                                  <label htmlFor="file-upload" className="mt-4 cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-4 rounded-full transition-colors duration-300">
+                                      Browse Files
+                                  </label>
+                                  <p className="mt-4 text-xs text-slate-600">Supported format: .pptx</p>
+                              </div>
+                          </>
+                      )}
+                      {isParsing && (
+                          <div className="flex items-center justify-center text-lg text-yellow-400">
+                              <i className="fas fa-spinner fa-spin mr-3"></i>
+                              Parsing your presentation...
+                          </div>
+                      )}
+                      {pptxFile && !isParsing && slides.length > 0 && (
+                          <div className="flex flex-col items-center justify-center">
+                              <i className="fas fa-check-circle fa-3x mb-4 text-green-400"></i>
+                              <h2 className="text-xl font-semibold text-slate-300">Slides Ready</h2>
+                              <p className="mt-2 text-slate-400">"{pptxFile.name}"</p>
+                              <p className="text-sm text-slate-500">{slides.length} slides loaded</p>
+                          </div>
+                      )}
+                  </div>
+                  
+                  {/* Video Upload or Camera Setup Section */}
+                  {recordingMode === 'upload' ? (
+                    <VideoUpload 
+                      onVideoProcessed={handleVideoProcessed}
+                      isProcessing={isProcessingVideo}
+                    />
+                  ) : (
+                    <div className="p-8 border-2 border-dashed border-slate-700 rounded-2xl">
+                      <h3 className="text-lg font-semibold text-slate-100 mb-4">Live Recording Setup</h3>
+                      <div className="flex flex-col items-center justify-center">
+                        <i className="fas fa-camera fa-3x mb-4 text-slate-500"></i>
+                        <h2 className="text-xl font-semibold text-slate-300">Camera & Microphone</h2>
+                        <p className="mt-2 text-slate-400 text-center text-sm">
+                          {hasMediaPermissions 
+                            ? 'Ready to record your live presentation'
+                            : 'Click "Start Judging" to enable camera and microphone'}
+                        </p>
+                        {hasMediaPermissions && (
+                          <div className="mt-4 flex items-center gap-2 text-green-400">
+                            <i className="fas fa-check-circle"></i>
+                            <span className="text-sm">Permissions granted</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
             </div>
         );
@@ -1310,13 +1436,25 @@ const App: React.FC = () => {
       
       <footer className="w-full max-w-7xl mx-auto mt-8 h-16 flex items-center justify-center">
         {status === SessionStatus.IDLE || status === SessionStatus.COMPLETE || status === SessionStatus.ERROR ? (
-          <ControlButton
-            onClick={status === SessionStatus.IDLE ? handleStart : resetState}
-            disabled={slides.length === 0 || isParsing || (!hasMediaPermissions && status === SessionStatus.IDLE)}
-          >
-            <i className={`fas ${status === SessionStatus.IDLE ? 'fa-play' : 'fa-redo'} mr-2`}></i>
-            {status === SessionStatus.IDLE ? 'Start Judging' : 'Start New Evaluation'}
-          </ControlButton>
+          recordingMode === 'upload' && uploadedVideo && status === SessionStatus.IDLE ? (
+            // For video upload mode, no start button needed as processing starts automatically
+            null
+          ) : (
+            <ControlButton
+              onClick={status === SessionStatus.IDLE ? handleStart : resetState}
+              disabled={
+                slides.length === 0 || 
+                isParsing || 
+                (recordingMode === 'live' && !hasMediaPermissions && status === SessionStatus.IDLE) ||
+                isProcessingVideo
+              }
+            >
+              <i className={`fas ${status === SessionStatus.IDLE ? 'fa-play' : 'fa-redo'} mr-2`}></i>
+              {status === SessionStatus.IDLE 
+                ? (recordingMode === 'live' ? 'Start Live Judging' : 'Start Judging') 
+                : 'Start New Evaluation'}
+            </ControlButton>
+          )
         ) : status === SessionStatus.LISTENING ? (
           <ControlButton onClick={handleStopPresentation} variant="danger">
             <i className="fas fa-stop mr-2"></i> Finish Presentation & Start Q&A

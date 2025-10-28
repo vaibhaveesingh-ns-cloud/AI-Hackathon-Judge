@@ -7,7 +7,6 @@ import tempfile
 from pathlib import Path
 from typing import List, Tuple
 import ffmpeg
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +17,9 @@ class AudioChunker:
     
     # Whisper API limit is 25MB, we'll use 20MB to be safe
     MAX_CHUNK_SIZE = 20 * 1024 * 1024  # 20MB in bytes
-    
-    # Maximum chunk duration in seconds (10 minutes)
-    MAX_CHUNK_DURATION = 600  
+    DEFAULT_SEGMENT_DURATION = 120  # seconds
+    MIN_SEGMENT_DURATION = 45  # seconds
+    MAX_SEGMENT_DURATION = 600
     
     @staticmethod
     def estimate_chunk_duration(file_size: int, total_duration: float) -> float:
@@ -36,8 +35,8 @@ class AudioChunker:
         # Calculate duration per chunk
         chunk_duration = total_duration / num_chunks
         
-        # Cap at maximum duration
-        return min(chunk_duration, AudioChunker.MAX_CHUNK_DURATION)
+        # Cap at configured maximum segment duration
+        return min(chunk_duration, AudioChunker.MAX_SEGMENT_DURATION)
     
     @staticmethod
     def get_audio_duration(audio_path: Path) -> float:
@@ -55,74 +54,83 @@ class AudioChunker:
             return file_size_mb * 60
     
     @staticmethod
-    def split_audio(audio_path: Path, chunk_duration: float) -> List[Tuple[bytes, float, float]]:
+    def split_audio(audio_path: Path, requested_duration: float | None = None) -> List[Tuple[bytes, float, float]]:
         """
-        Split audio file into chunks
-        Returns list of (chunk_bytes, start_time, end_time) tuples
+        Split audio file into chunks using ffmpeg segment muxer.
+        Returns list of (chunk_bytes, start_time, end_time) tuples.
         """
-        chunks = []
         total_duration = AudioChunker.get_audio_duration(audio_path)
-        
+
         if audio_path.stat().st_size <= AudioChunker.MAX_CHUNK_SIZE:
-            # File is small enough, no need to split
-            with open(audio_path, 'rb') as f:
-                chunks.append((f.read(), 0, total_duration))
-            return chunks
-        
-        # Calculate optimal chunk duration
-        chunk_duration = AudioChunker.estimate_chunk_duration(
-            audio_path.stat().st_size, 
-            total_duration
+            with open(audio_path, "rb") as f:
+                return [(f.read(), 0.0, total_duration)]
+
+        segment_duration = AudioChunker.estimate_chunk_duration(
+            audio_path.stat().st_size, total_duration
         )
-        
-        logger.info(f"Splitting audio into chunks of {chunk_duration:.1f} seconds")
-        
-        current_time = 0
-        chunk_index = 0
-        
-        while current_time < total_duration:
-            end_time = min(current_time + chunk_duration, total_duration)
-            
-            # Extract chunk using ffmpeg
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-                try:
-                    (
-                        ffmpeg
-                        .input(str(audio_path), ss=current_time, t=chunk_duration)
-                        .output(
-                            tmp_file.name,
-                            ac=1,  # mono
-                            ar=16000,  # 16kHz
-                            acodec='pcm_s16le',
-                            format='wav',
-                            loglevel='error'
-                        )
-                        .overwrite_output()
-                        .run(capture_stdout=True, capture_stderr=True)
+        if requested_duration:
+            segment_duration = min(segment_duration, requested_duration)
+        segment_duration = max(
+            AudioChunker.MIN_SEGMENT_DURATION,
+            min(segment_duration, AudioChunker.DEFAULT_SEGMENT_DURATION, AudioChunker.MAX_SEGMENT_DURATION),
+        )
+
+        logger.info(
+            "[AudioChunker] Preparing segmented extraction: size=%.2fMB duration=%.1fs segment=%.1fs",
+            audio_path.stat().st_size / (1024 * 1024),
+            total_duration,
+            segment_duration,
+        )
+
+        attempt_duration = segment_duration
+        while True:
+            with tempfile.TemporaryDirectory(prefix="audio_segments_") as tmp_dir:
+                segment_pattern = Path(tmp_dir) / "chunk_%03d.wav"
+                (
+                    ffmpeg.input(str(audio_path))
+                    .output(
+                        str(segment_pattern),
+                        f="segment",
+                        segment_time=float(attempt_duration),
+                        ac=1,
+                        ar=16000,
+                        acodec="pcm_s16le",
+                        reset_timestamps="1",
+                        loglevel="error",
                     )
-                    
-                    # Read the chunk
-                    with open(tmp_file.name, 'rb') as f:
-                        chunk_data = f.read()
-                    
-                    # Check chunk size
-                    if len(chunk_data) > AudioChunker.MAX_CHUNK_SIZE:
-                        # Chunk is still too large, reduce duration
-                        logger.warning(f"Chunk {chunk_index} too large ({len(chunk_data)} bytes), reducing duration")
-                        chunk_duration = chunk_duration * 0.8
-                        continue
-                    
-                    chunks.append((chunk_data, current_time, end_time))
-                    logger.info(f"Created chunk {chunk_index}: {current_time:.1f}s - {end_time:.1f}s ({len(chunk_data) / 1024 / 1024:.1f}MB)")
-                    
-                    current_time = end_time
-                    chunk_index += 1
-                    
-                finally:
-                    # Clean up temp file
-                    Path(tmp_file.name).unlink(missing_ok=True)
-        
-        return chunks
+                    .overwrite_output()
+                    .run(capture_stdout=True, capture_stderr=True)
+                )
+
+                chunk_paths = sorted(Path(tmp_dir).glob("chunk_*.wav"))
+                if not chunk_paths:
+                    raise RuntimeError("ffmpeg failed to produce segmented audio chunks")
+
+                largest_chunk = 0
+                chunks: List[Tuple[bytes, float, float]] = []
+                for index, chunk_path in enumerate(chunk_paths):
+                    data = chunk_path.read_bytes()
+                    largest_chunk = max(largest_chunk, len(data))
+                    start_time = index * attempt_duration
+                    end_time = min(start_time + attempt_duration, total_duration)
+                    chunks.append((data, start_time, end_time))
+
+                if largest_chunk > AudioChunker.MAX_CHUNK_SIZE and attempt_duration > AudioChunker.MIN_SEGMENT_DURATION:
+                    attempt_duration = max(AudioChunker.MIN_SEGMENT_DURATION, attempt_duration * 0.75)
+                    logger.warning(
+                        "[AudioChunker] Chunk exceeded max size (%.2fMB). Retrying with shorter duration %.1fs",
+                        largest_chunk / (1024 * 1024),
+                        attempt_duration,
+                    )
+                    continue
+
+                logger.info(
+                    "[AudioChunker] Created %d chunks (segment %.1fs, max %.2fMB)",
+                    len(chunks),
+                    attempt_duration,
+                    largest_chunk / (1024 * 1024),
+                )
+                return chunks
     
     @staticmethod
     def merge_transcriptions(transcriptions: List[dict], chunk_times: List[Tuple[float, float]]) -> dict:

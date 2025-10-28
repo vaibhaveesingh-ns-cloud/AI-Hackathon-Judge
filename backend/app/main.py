@@ -10,6 +10,8 @@ import os
 import tempfile
 from datetime import datetime
 
+import time 
+
 import httpx
 import websockets
 from dotenv import load_dotenv
@@ -502,70 +504,88 @@ def create_app() -> FastAPI:
         MAX_DIRECT_SIZE = 20 * 1024 * 1024  # 20MB
         
         if len(processed_bytes) > MAX_DIRECT_SIZE:
-            logger.info(f"[transcribe] Large audio file ({len(processed_bytes) / 1024 / 1024:.1f}MB), using chunked processing")
-            
-            # Save processed audio to temp file for chunking
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
+            logger.info(
+                "[transcribe] Large audio file (%.1fMB), preparing segmented processing",
+                len(processed_bytes) / 1024 / 1024,
+            )
+
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_audio:
                 tmp_audio.write(processed_bytes)
                 tmp_audio_path = Path(tmp_audio.name)
-            
+
             try:
-                # Split audio into chunks
-                audio_chunks = AudioChunker.split_audio(tmp_audio_path, chunk_duration=300)  # 5-minute chunks
-                logger.info(f"[transcribe] Split audio into {len(audio_chunks)} chunks")
-                
-                # Transcribe each chunk
-                chunk_transcriptions = []
-                chunk_times = []
-                
-                for i, (chunk_data, start_time, end_time) in enumerate(audio_chunks):
-                    logger.info(f"[transcribe] Processing chunk {i+1}/{len(audio_chunks)}")
-                    
-                    def run_chunk_transcription(chunk_bytes: bytes, chunk_name: str) -> object:
-                        buf = io.BytesIO(chunk_bytes)
-                        setattr(buf, "name", chunk_name)
-                        try:
-                            buf.seek(0)
-                            return openai_client.audio.transcriptions.create(
-                                model=TRANSCRIPTION_MODEL,
-                                file=buf,
-                                response_format="verbose_json",
-                                temperature=0,
-                            )
-                        finally:
-                            buf.close()
-                    
-                    chunk_result = await asyncio.to_thread(
-                        run_chunk_transcription, 
-                        chunk_data, 
-                        f"chunk_{i}.wav"
-                    )
-                    
-                    # Convert to dict if needed
-                    if hasattr(chunk_result, 'model_dump'):
-                        chunk_dict = chunk_result.model_dump()
+                segmentation_started = time.perf_counter()
+                audio_chunks = AudioChunker.split_audio(tmp_audio_path, requested_duration=120)
+                logger.info(
+                    "[transcribe] Segmentation produced %d chunks (elapsed %.2fs)",
+                    len(audio_chunks),
+                    time.perf_counter() - segmentation_started,
+                )
+
+                semaphore = asyncio.Semaphore(3)
+                chunk_transcriptions: list[dict] = []
+                chunk_times: list[tuple[float, float]] = []
+
+                async def transcribe_chunk(index: int, chunk_bytes: bytes, start_time: float, end_time: float) -> None:
+                    chunk_name = f"chunk_{index:03d}.wav"
+
+                    async with semaphore:
+                        logger.info("[transcribe] -> chunk %s started (%.1fs-%.1fs)", chunk_name, start_time, end_time)
+
+                        def run_chunk_transcription() -> object:
+                            buf = io.BytesIO(chunk_bytes)
+                            setattr(buf, "name", chunk_name)
+                            try:
+                                buf.seek(0)
+                                return openai_client.audio.transcriptions.create(
+                                    model=TRANSCRIPTION_MODEL,
+                                    file=buf,
+                                    response_format="verbose_json",
+                                    temperature=0,
+                                )
+                            finally:
+                                buf.close()
+
+                        started = time.perf_counter()
+                        result = await asyncio.to_thread(run_chunk_transcription)
+                        elapsed = time.perf_counter() - started
+                        logger.info(
+                            "[transcribe] <- chunk %s finished in %.2fs", chunk_name, elapsed
+                        )
+
+                    if hasattr(result, "model_dump"):
+                        chunk_dict = result.model_dump()
                     else:
                         chunk_dict = {
-                            'text': getattr(chunk_result, 'text', ''),
-                            'segments': getattr(chunk_result, 'segments', [])
+                            "text": getattr(result, "text", ""),
+                            "segments": getattr(result, "segments", []),
                         }
-                    
+
                     chunk_transcriptions.append(chunk_dict)
                     chunk_times.append((start_time, end_time))
-                
-                # Merge all transcriptions
+
+                transcription_started = time.perf_counter()
+                await asyncio.gather(
+                    *[
+                        transcribe_chunk(idx, chunk_data, start_time, end_time)
+                        for idx, (chunk_data, start_time, end_time) in enumerate(audio_chunks)
+                    ]
+                )
+                logger.info(
+                    "[transcribe] Parallel transcription completed in %.2fs",
+                    time.perf_counter() - transcription_started,
+                )
+
                 merged_result = AudioChunker.merge_transcriptions(chunk_transcriptions, chunk_times)
-                
-                # Create a mock transcription object with merged data
+
                 class MergedTranscription:
                     def __init__(self, data):
-                        self.text = data.get('text', '')
-                        self.segments = data.get('segments', [])
-                
+                        self.text = data.get("text", "")
+                        self.segments = data.get("segments", [])
+
                 transcription = MergedTranscription(merged_result)
-                
+
             finally:
-                # Clean up temp file
                 tmp_audio_path.unlink(missing_ok=True)
         else:
             # Small file, process directly

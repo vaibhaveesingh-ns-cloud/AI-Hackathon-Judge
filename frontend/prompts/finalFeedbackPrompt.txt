@@ -14,6 +14,7 @@ Score only the main presentation delivery and slide usage — ignore Q&A perform
 Base every judgment on observable evidence from transcript, slides, and visual cues.
 Apply fair scoring:
 - Use the full scoring range. When evidence shows strong execution with only minor lapses, award high sub-scores (≈1.7–2.0) and overall scores in the 7–9 band.
+- When every delivery sub-criterion is supported by compelling, flawless evidence, award the full 2.0 points on each sub-score for a delivery total of 10/10.
 - If evidence is missing, ambiguous, contradictory, or partial, cap the affected sub-score at 3 and explain the deficiency.
 Use graded interpretation to avoid over-penalization when partial evidence is present.
 Rate each main criterion on a 0–10 scale:
@@ -85,7 +86,7 @@ overallScore = (0.4 × delivery) + (0.3 × engagement) + (0.3 × slides)
 
 STRICT SCORING POLICY
 Calibrate scores using the weighting formula above; let strong areas lift the overall score while still noting gaps.
-Reserve 9–10 only for exceptional, multi-evidence execution across all sub-points.
+Reserve 9–10 for exceptional, multi-evidence execution across all sub-points, and do award 10/10 when every sub-criterion is unequivocally met at the highest standard.
 When evidence is ambiguous or partially visible, choose the most conservative interpretation and note this clearly in the explanation.
 Use soft caps (reduce points proportionally) instead of hard 3-point ceilings for partial evidence, unless the data is fully missing or contradictory.
 
